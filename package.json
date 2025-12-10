@@ -1,0 +1,30 @@
+{
+  "name": "spring-boot-mcp-servers",
+  "version": "1.0.0",
+  "description": "MCP servers for deep Spring Boot context analysis in IntelliJ Cody",
+  "private": true,
+  "workspaces": [
+    "packages/micro-context",
+    "packages/macro-context",
+    "packages/spring-component"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces",
+    "test": "npm run test --workspaces",
+    "clean": "npm run clean --workspaces && rm -rf node_modules",
+    "build:java": "cd packages/java-parser-service && ./build.sh"
+  },
+  "keywords": [
+    "mcp",
+    "spring-boot",
+    "intellij",
+    "cody",
+    "java-analysis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
