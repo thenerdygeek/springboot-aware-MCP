@@ -33,11 +33,9 @@ Build specialized MCP servers that provide:
 
 ---
 
-## 📋 Phase 1 Status (✅ COMPLETE)
+## 📊 Current Status (56% Complete - 9 of 16 tools)
 
-### ✅ Implemented
-
-**Foundation:**
+### ✅ Phase 1: Foundation (100% COMPLETE)
 - ✅ Project structure with npm workspaces
 - ✅ TypeScript configuration for all 3 MCP servers
 - ✅ Java Parser Service with Maven
@@ -45,35 +43,32 @@ Build specialized MCP servers that provide:
 - ✅ Base MCP server template
 - ✅ stdin/stdout JSON communication protocol
 
-**Proof of Concept:**
-- ✅ `resolve_symbol` tool (fully implemented)
-  - Resolves symbols to their types and declaration locations
-  - Uses JavaParser with SymbolSolver
-  - Markdown-formatted output
-  - Full error handling
+### ✅ Phase 2: Micro Context Server (100% COMPLETE - 5/5 tools)
 
-### 🚧 Coming in Phase 2-4
+1. ✅ **resolve_symbol** - Resolve symbol to type and declaration location
+2. ✅ **get_function_definition** - Get complete method implementation
+3. ✅ **get_dto_structure** - Analyze DTO/Entity structure with fields
+4. ✅ **find_execution_branches** - Find conditional branches and control flow
+5. ✅ **find_mockable_dependencies** - Identify external dependencies for testing
 
-**Phase 2 (Micro Context):**
-- `get_function_definition` - Extract complete method definitions
-- `get_dto_structure` - Recursive DTO structure analysis
-- `find_execution_branches` - Test coverage branch analysis
-- `find_mockable_dependencies` - Identify dependencies for mocking
+### 🟡 Phase 3: Macro Context Server (57% COMPLETE - 4/7 tools)
 
-**Phase 3 (Macro Context):**
-- `build_method_call_chain` - Trace method calls to framework boundaries
-- `trace_data_transformation` - DTO → Entity → DTO flow
-- `find_all_usages` - Impact analysis
-- `trace_endpoint_to_repository` - Complete HTTP → DB flow
-- `find_entity_by_table` - Map tables to JPA entities
-- `find_advice_adapters` - List advice implementations
-- `find_filters_and_order` - List filters with execution order
+**Implemented:**
+1. ✅ **build_method_call_chain** - Build complete call chain with graph visualization
+2. ✅ **trace_data_transformation** - Trace DTO transformations through layers
+3. ✅ **find_all_usages** - Find all usages with impact assessment (LOW/MEDIUM/HIGH/CRITICAL)
+4. ✅ **trace_endpoint_to_repository** - Trace endpoint → controller → service → repository → entity
 
-**Phase 4 (Spring Component):**
-- `analyze_controller_method` - Extract controller details
-- `find_controller_for_endpoint` - Find endpoint handlers
-- `find_implementations` - Find interface implementations
-- `find_feature_flag_usage` - Detect feature flags
+**Remaining:**
+5. ⏳ **find_entity_by_table** - Map database tables to JPA entities
+6. ⏳ **find_advice_adapters** - Find AOP advice implementations
+7. ⏳ **find_filters_and_order** - Find servlet filters with execution order
+
+### ⏳ Phase 4: Spring Component Server (0% COMPLETE - 0/4 tools)
+- ⏳ `analyze_controller_method` - Extract controller details
+- ⏳ `find_controller_for_endpoint` - Find endpoint handlers
+- ⏳ `find_implementations` - Find interface implementations
+- ⏳ `find_feature_flag_usage` - Detect feature flags
 
 ---
 
@@ -81,31 +76,45 @@ Build specialized MCP servers that provide:
 
 ### Prerequisites
 
-- **Node.js** >= 18.0.0
-- **Java JDK** >= 11 (recommended: 17 or 21)
-- **Maven** >= 3.8.0
+- **Node.js** >= 18.0.0 ([Download](https://nodejs.org/))
+- **Java JDK** >= 11 ([Download](https://adoptium.net/))
+- **Maven** >= 3.8.0 ([Download](https://maven.apache.org/))
 - **IntelliJ IDEA** with Cody plugin installed
 
 ### Installation
 
-```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd CodyMcpServers
+**Windows:**
+```cmd
+REM Run the automated build script
+build.bat
+```
 
-# 2. Install Node.js dependencies
+**Linux/Mac:**
+```bash
+# 1. Install Node.js dependencies
 npm install
 
-# 3. Build TypeScript servers
-npm run build --workspace=packages/micro-context
+# 2. Build TypeScript servers
+npm run build
 
-# 4. Build Java Parser Service
+# 3. Build Java Parser Service
 cd packages/java-parser-service
-./build.sh
+mvn clean package -DskipTests
 cd ../..
+```
 
-# Verify builds
+**Verify builds:**
+```cmd
+REM Windows
+dir packages\micro-context\dist\index.js
+dir packages\macro-context\dist\index.js
+dir packages\java-parser-service\target\java-parser-service-1.0.0.jar
+```
+
+```bash
+# Linux/Mac
 ls -lh packages/micro-context/dist/index.js
+ls -lh packages/macro-context/dist/index.js
 ls -lh packages/java-parser-service/target/java-parser-service-1.0.0.jar
 ```
 
@@ -113,32 +122,92 @@ ls -lh packages/java-parser-service/target/java-parser-service-1.0.0.jar
 
 ## ⚙️ Configuration for IntelliJ Cody
 
-### 1. Configure MCP Server in Cody
+> 📘 **For detailed Windows setup instructions, see [SETUP_GUIDE.md](./SETUP_GUIDE.md)**
 
-Open **IntelliJ IDEA → Settings → Tools → Cody → MCP Servers**
+### 1. Locate Cody Settings File
 
-Add the following configuration:
+**Windows:**
+```
+%APPDATA%\JetBrains\<IDE_VERSION>\options\cody_settings.json
+```
+Example: `C:\Users\YourName\AppData\Roaming\JetBrains\IntelliJIdea2024.1\options\cody_settings.json`
 
+**Mac:**
+```
+~/Library/Application Support/JetBrains/<IDE_VERSION>/options/cody_settings.json
+```
+
+**Linux:**
+```
+~/.config/JetBrains/<IDE_VERSION>/options/cody_settings.json
+```
+
+### 2. Configure MCP Servers
+
+Copy `cody_settings.example.json` to the location above, or add this to your existing file:
+
+**Windows:**
 ```json
 {
-  "spring-micro-context": {
-    "command": "node",
-    "args": [
-      "/absolute/path/to/CodyMcpServers/packages/micro-context/dist/index.js",
-      "${workspaceFolder}"
-    ],
-    "env": {
-      "PACKAGE_INCLUDE": "com.yourcompany.*",
-      "PACKAGE_EXCLUDE": "com.yourcompany.generated.*",
-      "DTO_PACKAGES": "com.yourcompany.dto,com.yourcompany.model",
-      "ENTITY_PACKAGES": "com.yourcompany.entity",
-      "MAX_DTO_DEPTH": "10"
+  "mcpServers": {
+    "spring-micro-context": {
+      "command": "node",
+      "args": [
+        "C:\\Projects\\CodyMcpServers\\packages\\micro-context\\dist\\index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "PACKAGE_INCLUDE": "",
+        "PACKAGE_EXCLUDE": ""
+      }
+    },
+    "spring-macro-context": {
+      "command": "node",
+      "args": [
+        "C:\\Projects\\CodyMcpServers\\packages\\macro-context\\dist\\index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "CALL_CHAIN_MAX_DEPTH": "15"
+      }
     }
   }
 }
 ```
 
-**Important:** Replace `/absolute/path/to/` with your actual installation path.
+**Mac/Linux:**
+```json
+{
+  "mcpServers": {
+    "spring-micro-context": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/CodyMcpServers/packages/micro-context/dist/index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "PACKAGE_INCLUDE": "",
+        "PACKAGE_EXCLUDE": ""
+      }
+    },
+    "spring-macro-context": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/CodyMcpServers/packages/macro-context/dist/index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "CALL_CHAIN_MAX_DEPTH": "15"
+      }
+    }
+  }
+}
+```
+
+**Important:**
+- Replace paths with your actual installation directory
+- Windows: Use double backslashes (`C:\\Projects\\...`)
+- Mac/Linux: Use forward slashes (`/home/user/...`)
 
 ### 2. Configure for Your Project
 
@@ -472,4 +541,15 @@ MIT
 
 ---
 
-**Built for IntelliJ IDEA with Cody** | **Powered by JavaParser & MCP** | **Phase 1 Complete** ✅
+---
+
+## 📚 Additional Resources
+
+- **[SETUP_GUIDE.md](./SETUP_GUIDE.md)** - Complete Windows setup guide with troubleshooting
+- **[cody_settings.example.json](./cody_settings.example.json)** - Ready-to-use configuration template
+- **[build.bat](./build.bat)** - Automated Windows build script
+- **[requirement_doc.md](./requirement_doc.md)** - Complete specification (120 pages)
+
+---
+
+**Built for IntelliJ IDEA with Cody** | **Powered by JavaParser & MCP** | **56% Complete (9/16 tools)** 🚀

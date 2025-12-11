@@ -32,108 +32,201 @@ export async function getDtoStructure(
 
 function formatDtoStructure(result: any, className: string): string {
   const {
+    simpleName,
     packageName,
     filePath,
-    annotations,
-    parentClass,
-    interfaces,
+    classType,
+    isInterface,
+    isAbstract,
+    classAnnotations,
+    lombokAnnotations,
     fields,
+    circular,
     maxDepthReached,
-    circularReferences,
-    nestedDtos,
-    totalFields,
-    fileReferences,
+    isCustomClass,
   } = result;
 
   let markdown = `# DTO Structure: ${className}\n\n`;
 
+  // Handle circular reference
+  if (circular) {
+    markdown += `⚠️ **Circular Reference Detected**\n\n`;
+    markdown += `This class was already analyzed in a parent structure, preventing infinite recursion.\n`;
+    return markdown;
+  }
+
+  // Handle max depth reached
+  if (maxDepthReached) {
+    markdown += `⚠️ **Maximum Depth Reached**\n\n`;
+    markdown += `Analysis stopped at maximum configured depth.\n`;
+    return markdown;
+  }
+
+  // Handle non-custom classes (framework/JDK classes)
+  if (isCustomClass === false) {
+    markdown += `## Framework/JDK Class\n`;
+    markdown += `- **Package:** ${packageName}\n`;
+    markdown += `- **Note:** This is not a custom class from your codebase.\n`;
+    return markdown;
+  }
+
   markdown += `## Class Information\n`;
+  markdown += `- **Simple Name:** ${simpleName}\n`;
   markdown += `- **Package:** ${packageName}\n`;
+  markdown += `- **Type:** ${classType}\n`;
   markdown += `- **File:** \`${filePath}\`\n`;
 
-  if (annotations && annotations.length > 0) {
-    markdown += `- **Annotations:** ${annotations.join(', ')}\n`;
+  if (isInterface) {
+    markdown += `- **Is Interface:** Yes\n`;
   }
-
-  if (parentClass) {
-    markdown += `- **Parent Class:** ${parentClass}\n`;
-  }
-
-  if (interfaces && interfaces.length > 0) {
-    markdown += `- **Interfaces:** ${interfaces.join(', ')}\n`;
+  if (isAbstract) {
+    markdown += `- **Is Abstract:** Yes\n`;
   }
   markdown += '\n';
 
+  // Class Annotations
+  if (classAnnotations && classAnnotations.length > 0) {
+    markdown += `## Class Annotations\n`;
+    classAnnotations.forEach((ann: any) => {
+      markdown += `- \`${ann.fullAnnotation}\`\n`;
+    });
+    markdown += '\n';
+  }
+
+  // Lombok Info
+  if (lombokAnnotations) {
+    const hasAnyLombok = lombokAnnotations.hasData || lombokAnnotations.hasGetter ||
+                         lombokAnnotations.hasSetter || lombokAnnotations.hasBuilder ||
+                         lombokAnnotations.hasAllArgsConstructor || lombokAnnotations.hasNoArgsConstructor;
+
+    if (hasAnyLombok) {
+      markdown += `## Lombok Features\n`;
+      if (lombokAnnotations.hasData) markdown += `- ✅ **@Data** - Auto-generates getters, setters, toString, equals, hashCode\n`;
+      if (lombokAnnotations.hasGetter) markdown += `- ✅ **@Getter** - Auto-generates getter methods\n`;
+      if (lombokAnnotations.hasSetter) markdown += `- ✅ **@Setter** - Auto-generates setter methods\n`;
+      if (lombokAnnotations.hasBuilder) markdown += `- ✅ **@Builder** - Enables builder pattern\n`;
+      if (lombokAnnotations.hasAllArgsConstructor) markdown += `- ✅ **@AllArgsConstructor** - Generates constructor with all fields\n`;
+      if (lombokAnnotations.hasNoArgsConstructor) markdown += `- ✅ **@NoArgsConstructor** - Generates no-args constructor\n`;
+      markdown += '\n';
+    }
+  }
+
   // Fields
   if (fields && fields.length > 0) {
-    markdown += `## Fields\n\n`;
+    markdown += `## Fields (${fields.length} total)\n\n`;
 
     fields.forEach((field: any) => {
-      markdown += `### ${field.name} (${field.type})\n`;
-      markdown += `- **Type:** ${field.fullType}\n`;
-      markdown += `- **Collection:** ${field.isCollection ? `Yes (${field.collectionType})` : 'No'}\n`;
-      markdown += `- **Custom Class:** ${field.isCustomClass ? 'Yes' : 'No'}\n`;
-      markdown += `- **Required:** ${field.isRequired ? 'Yes' : 'No'}\n`;
+      const typeInfo = field.typeInfo || {};
 
-      if (field.validationAnnotations && field.validationAnnotations.length > 0) {
-        markdown += `- **Validation:** ${field.validationAnnotations.join(', ')}\n`;
+      markdown += `### ${field.name}\n`;
+      markdown += `- **Type:** \`${field.type}\`\n`;
+      markdown += `- **Visibility:** ${field.visibility}\n`;
+
+      if (field.isFinal) {
+        markdown += `- **Final:** Yes\n`;
       }
 
-      markdown += `- **Line:** ${field.lineNumber}\n`;
+      // Type analysis
+      if (typeInfo.isCollection) {
+        markdown += `- **Collection:** Yes (${typeInfo.isList ? 'List' : typeInfo.isSet ? 'Set' : 'Collection'})\n`;
+        if (typeInfo.elementType) {
+          markdown += `- **Element Type:** \`${typeInfo.elementType}\`\n`;
+        }
+      } else if (typeInfo.isMap) {
+        markdown += `- **Map:** Yes\n`;
+        if (typeInfo.keyType && typeInfo.valueType) {
+          markdown += `- **Key Type:** \`${typeInfo.keyType}\`\n`;
+          markdown += `- **Value Type:** \`${typeInfo.valueType}\`\n`;
+        }
+      }
 
-      // If this field is a custom class, show its structure
+      if (typeInfo.isPrimitive) {
+        markdown += `- **Primitive/Wrapper:** Yes\n`;
+      }
+
+      // Annotations
+      if (field.annotations && field.annotations.length > 0) {
+        const validationAnns = field.annotations.filter((a: any) => a.isValidation);
+        const otherAnns = field.annotations.filter((a: any) => !a.isValidation);
+
+        if (validationAnns.length > 0) {
+          markdown += `- **Validation:** `;
+          markdown += validationAnns.map((a: any) => `\`${a.fullAnnotation}\``).join(', ') + '\n';
+        }
+
+        if (otherAnns.length > 0) {
+          markdown += `- **Annotations:** `;
+          markdown += otherAnns.map((a: any) => `\`${a.fullAnnotation}\``).join(', ') + '\n';
+        }
+      }
+
+      // Nested structure
       if (field.nestedStructure) {
-        markdown += `\n`;
+        markdown += `\n**Nested Structure:**\n`;
         markdown += formatNestedStructure(field.nestedStructure, 4);
+      }
+
+      if (field.elementStructure && typeInfo.isCollection) {
+        markdown += `\n**Element Type Structure:**\n`;
+        markdown += formatNestedStructure(field.elementStructure, 4);
+      }
+
+      if (field.valueStructure && typeInfo.isMap) {
+        markdown += `\n**Map Value Type Structure:**\n`;
+        markdown += formatNestedStructure(field.valueStructure, 4);
       }
 
       markdown += `\n`;
     });
-  }
-
-  // Summary
-  markdown += `## Summary\n`;
-  markdown += `- **Total Fields:** ${totalFields}\n`;
-
-  if (nestedDtos && nestedDtos.length > 0) {
-    markdown += `- **Nested DTOs:** ${nestedDtos.length} (${nestedDtos.join(', ')})\n`;
-  }
-
-  markdown += `- **Max Depth Reached:** ${maxDepthReached}\n`;
-
-  if (circularReferences && circularReferences.length > 0) {
-    markdown += `- **Circular References:** Yes (${circularReferences.join(', ')})\n`;
   } else {
-    markdown += `- **Circular References:** No\n`;
+    markdown += `## Fields\n\nNo fields found (or all fields are static).\n\n`;
   }
-
-  // File References
-  if (fileReferences && fileReferences.length > 0) {
-    markdown += `\n## File References\n`;
-    fileReferences.forEach((ref: string) => {
-      markdown += `- \`${ref}\`\n`;
-    });
-  }
-
-  markdown += `\n---\n`;
-  markdown += `Structure extracted with ${maxDepthReached} levels of nesting.\n`;
 
   return markdown;
 }
 
 function formatNestedStructure(nested: any, indent: number): string {
   const prefix = ' '.repeat(indent);
-  let markdown = `${prefix}#### ${nested.className} Structure\n`;
-  markdown += `${prefix}**File:** \`${nested.filePath}\`\n\n`;
-  markdown += `${prefix}**Fields:**\n`;
+
+  // Handle circular reference
+  if (nested.circular) {
+    return `${prefix}_Circular reference to ${nested.className}_\n\n`;
+  }
+
+  // Handle max depth
+  if (nested.maxDepthReached) {
+    return `${prefix}_Max depth reached for ${nested.className}_\n\n`;
+  }
+
+  // Handle non-custom class
+  if (nested.isCustomClass === false) {
+    return `${prefix}_Framework class: ${nested.className}_\n\n`;
+  }
+
+  let markdown = `${prefix}**Class:** ${nested.simpleName || nested.className}\n`;
+  markdown += `${prefix}**Type:** ${nested.classType}\n`;
+
+  if (nested.filePath) {
+    markdown += `${prefix}**File:** \`${nested.filePath}\`\n`;
+  }
 
   if (nested.fields && nested.fields.length > 0) {
+    markdown += `${prefix}**Fields:** ${nested.fields.length} total\n`;
     nested.fields.forEach((field: any) => {
-      const required = field.isRequired ? 'Required' : 'Optional';
-      markdown += `${prefix}- \`${field.name}\` (${field.type}) - ${required}, Line ${field.lineNumber}\n`;
+      const typeInfo = field.typeInfo || {};
+      const validationAnns = field.annotations?.filter((a: any) => a.isValidation) || [];
+      const validationStr = validationAnns.length > 0 ? ` [Validated]` : '';
+
+      if (typeInfo.isCollection) {
+        markdown += `${prefix}- \`${field.name}\`: ${typeInfo.isList ? 'List' : 'Set'}<${typeInfo.elementType}>${validationStr}\n`;
+      } else if (typeInfo.isMap) {
+        markdown += `${prefix}- \`${field.name}\`: Map<${typeInfo.keyType}, ${typeInfo.valueType}>${validationStr}\n`;
+      } else {
+        markdown += `${prefix}- \`${field.name}\`: ${field.type}${validationStr}\n`;
+      }
     });
   } else {
-    markdown += `${prefix}- (No fields or max depth reached)\n`;
+    markdown += `${prefix}**Fields:** None\n`;
   }
 
   markdown += `\n`;

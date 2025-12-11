@@ -11,6 +11,8 @@ import { JavaParserClient } from './java-parser-client.js';
 import { resolveSymbol } from './tools/resolve-symbol.js';
 import { getFunctionDefinition } from './tools/get-function-definition.js';
 import { getDtoStructure } from './tools/get-dto-structure.js';
+import { findExecutionBranches } from './tools/find-execution-branches.js';
+import { findMockableDependencies } from './tools/find-mockable-dependencies.js';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -171,13 +173,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
 
       case 'find_execution_branches':
+        result = await findExecutionBranches(javaParserClient, args as any);
+        break;
+
       case 'find_mockable_dependencies':
-        result = `# Tool Not Yet Implemented: ${name}\n\n`;
-        result += `This tool will be implemented in Phase 2.\n\n`;
-        result += `**Requested Parameters:**\n`;
-        result += '```json\n';
-        result += JSON.stringify(args, null, 2);
-        result += '\n```\n';
+        result = await findMockableDependencies(javaParserClient, args as any);
         break;
 
       default:
