@@ -10,6 +10,8 @@ import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.*;
 import com.github.javaparser.ast.expr.*;
+import com.github.javaparser.ast.stmt.*;
+import com.github.javaparser.ast.type.*;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
@@ -2609,33 +2611,1933 @@ public class Parser {
         String requestBody;
     }
 
-    public ObjectNode findEntityByTable(JsonNode params) {
-        return createStubResponse("find_entity_by_table", "Phase 3");
+    /**
+     * Tool 2.5: find_entity_by_table
+     * Finds JPA entity class mapped to a specific database table
+     */
+    public ObjectNode findEntityByTable(JsonNode params) throws Exception {
+        String tableName = params.get("tableName").asText();
+        String schema = params.has("schema") ? params.get("schema").asText() : null;
+
+        System.err.println("Finding entity for table: " + tableName);
+
+        ObjectNode result = objectMapper.createObjectNode();
+        ArrayNode alternativeEntities = objectMapper.createArrayNode();
+
+        // Search for entities with @Entity annotation
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            throw new Exception("Source directory not found: " + srcDir);
+        }
+
+        final ObjectNode[] foundEntity = {null};
+        final String normalizedTableName = tableName.toLowerCase();
+
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
+                            CompilationUnit cu = parseResult.getResult().get();
+
+                            // Find classes with @Entity annotation
+                            List<ClassOrInterfaceDeclaration> entities = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                    .filter(c -> c.getAnnotationByName("Entity").isPresent())
+                                    .collect(Collectors.toList());
+
+                            for (ClassOrInterfaceDeclaration entity : entities) {
+                                String entityTableName = getTableNameFromEntity(entity);
+
+                                if (entityTableName.equalsIgnoreCase(normalizedTableName)) {
+                                    // Found exact match
+                                    foundEntity[0] = buildEntityInfo(entity, javaFile, cu);
+                                    return;
+                                } else if (entityTableName.toLowerCase().contains(normalizedTableName) ||
+                                          normalizedTableName.contains(entityTableName.toLowerCase())) {
+                                    // Found similar table name - add to alternatives
+                                    ObjectNode alt = objectMapper.createObjectNode();
+                                    alt.put("tableName", entityTableName);
+                                    alt.put("entityClass", entity.getNameAsString());
+                                    alternativeEntities.add(alt);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Skip files that can't be parsed
+                    }
+                });
+
+        if (foundEntity[0] != null) {
+            result.set("entity", foundEntity[0]);
+        } else {
+            result.set("entity", null);
+            result.set("alternativeEntities", alternativeEntities);
+        }
+
+        return result;
     }
 
-    public ObjectNode findAdviceAdapters(JsonNode params) {
-        return createStubResponse("find_advice_adapters", "Phase 3");
+    /**
+     * Extract table name from @Table annotation or use entity class name
+     */
+    private String getTableNameFromEntity(ClassOrInterfaceDeclaration entity) {
+        // Check for @Table annotation
+        Optional<AnnotationExpr> tableAnnotation = entity.getAnnotationByName("Table");
+
+        if (tableAnnotation.isPresent()) {
+            AnnotationExpr ann = tableAnnotation.get();
+
+            if (ann.isNormalAnnotationExpr()) {
+                // Look for name attribute
+                Optional<Expression> nameValue = ann.asNormalAnnotationExpr()
+                        .getPairs()
+                        .stream()
+                        .filter(pair -> pair.getNameAsString().equals("name"))
+                        .map(pair -> pair.getValue())
+                        .findFirst();
+
+                if (nameValue.isPresent()) {
+                    return nameValue.get().toString().replace("\"", "");
+                }
+            } else if (ann.isSingleMemberAnnotationExpr()) {
+                return ann.asSingleMemberAnnotationExpr()
+                        .getMemberValue()
+                        .toString()
+                        .replace("\"", "");
+            }
+        }
+
+        // Default: use entity class name in lowercase
+        return entity.getNameAsString().toLowerCase();
     }
 
-    public ObjectNode findFiltersAndOrder(JsonNode params) {
-        return createStubResponse("find_filters_and_order", "Phase 3");
+    /**
+     * Build complete entity information
+     */
+    private ObjectNode buildEntityInfo(ClassOrInterfaceDeclaration entity, Path javaFile, CompilationUnit cu) {
+        ObjectNode entityInfo = objectMapper.createObjectNode();
+
+        entityInfo.put("className", entity.getNameAsString());
+        entityInfo.put("file", javaFile.toString());
+
+        // Package
+        cu.getPackageDeclaration().ifPresent(pkg ->
+                entityInfo.put("package", pkg.getNameAsString())
+        );
+
+        // Annotations
+        ArrayNode annotations = objectMapper.createArrayNode();
+        entity.getAnnotations().forEach(ann -> annotations.add(ann.getNameAsString()));
+        entityInfo.set("annotations", annotations);
+
+        // Table info
+        ObjectNode tableInfo = objectMapper.createObjectNode();
+        Optional<AnnotationExpr> tableAnn = entity.getAnnotationByName("Table");
+
+        if (tableAnn.isPresent() && tableAnn.get().isNormalAnnotationExpr()) {
+            tableAnn.get().asNormalAnnotationExpr().getPairs().forEach(pair -> {
+                String name = pair.getNameAsString();
+                String value = pair.getValue().toString().replace("\"", "");
+
+                if (name.equals("name")) {
+                    tableInfo.put("name", value);
+                } else if (name.equals("schema")) {
+                    tableInfo.put("schema", value);
+                } else if (name.equals("catalog")) {
+                    tableInfo.put("catalog", value);
+                }
+            });
+        } else {
+            tableInfo.put("name", entity.getNameAsString().toLowerCase());
+        }
+
+        entityInfo.set("tableInfo", tableInfo);
+
+        // Fields
+        ArrayNode fields = objectMapper.createArrayNode();
+        List<FieldDeclaration> entityFields = entity.getFields();
+
+        for (FieldDeclaration field : entityFields) {
+            ObjectNode fieldInfo = objectMapper.createObjectNode();
+
+            String fieldName = field.getVariable(0).getNameAsString();
+            String fieldType = field.getVariable(0).getTypeAsString();
+
+            fieldInfo.put("name", fieldName);
+            fieldInfo.put("type", fieldType);
+
+            // Check for @Column annotation
+            field.getAnnotationByName("Column").ifPresent(colAnn -> {
+                if (colAnn.isNormalAnnotationExpr()) {
+                    colAnn.asNormalAnnotationExpr().getPairs().forEach(pair -> {
+                        if (pair.getNameAsString().equals("name")) {
+                            fieldInfo.put("columnName", pair.getValue().toString().replace("\"", ""));
+                        } else if (pair.getNameAsString().equals("nullable")) {
+                            fieldInfo.put("nullable", pair.getValue().toString().equals("true"));
+                        }
+                    });
+                }
+            });
+
+            // Check for primary key
+            fieldInfo.put("isPrimaryKey", field.getAnnotationByName("Id").isPresent());
+
+            // Check for relationships
+            boolean isRelationship = field.getAnnotationByName("OneToMany").isPresent() ||
+                                   field.getAnnotationByName("ManyToOne").isPresent() ||
+                                   field.getAnnotationByName("OneToOne").isPresent() ||
+                                   field.getAnnotationByName("ManyToMany").isPresent();
+
+            if (!isRelationship) {
+                fields.add(fieldInfo);
+            }
+        }
+
+        entityInfo.set("fields", fields);
+
+        // Relationships
+        ArrayNode relationships = objectMapper.createArrayNode();
+
+        for (FieldDeclaration field : entityFields) {
+            ObjectNode relInfo = null;
+
+            if (field.getAnnotationByName("OneToMany").isPresent()) {
+                relInfo = buildRelationshipInfo(field, "OneToMany");
+            } else if (field.getAnnotationByName("ManyToOne").isPresent()) {
+                relInfo = buildRelationshipInfo(field, "ManyToOne");
+            } else if (field.getAnnotationByName("OneToOne").isPresent()) {
+                relInfo = buildRelationshipInfo(field, "OneToOne");
+            } else if (field.getAnnotationByName("ManyToMany").isPresent()) {
+                relInfo = buildRelationshipInfo(field, "ManyToMany");
+            }
+
+            if (relInfo != null) {
+                relationships.add(relInfo);
+            }
+        }
+
+        if (relationships.size() > 0) {
+            entityInfo.set("relationships", relationships);
+        }
+
+        // File reference
+        entityInfo.put("fileReference", javaFile.toString());
+
+        return entityInfo;
+    }
+
+    /**
+     * Build relationship information from field
+     */
+    private ObjectNode buildRelationshipInfo(FieldDeclaration field, String relationType) {
+        ObjectNode relInfo = objectMapper.createObjectNode();
+
+        relInfo.put("type", relationType);
+        relInfo.put("fieldName", field.getVariable(0).getNameAsString());
+        relInfo.put("targetEntity", field.getVariable(0).getTypeAsString());
+
+        // Extract attributes from relationship annotation
+        Optional<AnnotationExpr> relAnn = field.getAnnotationByName(relationType);
+
+        if (relAnn.isPresent() && relAnn.get().isNormalAnnotationExpr()) {
+            relAnn.get().asNormalAnnotationExpr().getPairs().forEach(pair -> {
+                String name = pair.getNameAsString();
+                String value = pair.getValue().toString().replace("\"", "");
+
+                if (name.equals("mappedBy")) {
+                    relInfo.put("mappedBy", value);
+                } else if (name.equals("fetch")) {
+                    relInfo.put("fetchType", value);
+                }
+            });
+        }
+
+        return relInfo;
+    }
+
+    /**
+     * Tool 2.6: find_advice_adapters
+     * Finds AOP advice and adapters that intercept methods or classes
+     */
+    public ObjectNode findAdviceAdapters(JsonNode params) throws Exception {
+        String targetClass = params.has("targetClass") ? params.get("targetClass").asText() : null;
+        String targetMethod = params.has("targetMethod") ? params.get("targetMethod").asText() : null;
+
+        System.err.println("Finding AOP advice" +
+                (targetClass != null ? " for class: " + targetClass : "") +
+                (targetMethod != null ? " and method: " + targetMethod : ""));
+
+        ObjectNode result = objectMapper.createObjectNode();
+        ArrayNode aspects = objectMapper.createArrayNode();
+        ArrayNode matchingAdvice = objectMapper.createArrayNode();
+        Map<String, Integer> adviceByType = new HashMap<>();
+        List<AspectInfo> aspectList = new ArrayList<>();
+        Set<String> fileReferences = new HashSet<>();
+
+        // Search for @Aspect classes
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            throw new Exception("Source directory not found: " + srcDir);
+        }
+
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
+                            CompilationUnit cu = parseResult.getResult().get();
+
+                            // Find classes with @Aspect annotation
+                            List<ClassOrInterfaceDeclaration> aspectClasses = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                    .filter(c -> c.getAnnotationByName("Aspect").isPresent())
+                                    .collect(Collectors.toList());
+
+                            for (ClassOrInterfaceDeclaration aspectClass : aspectClasses) {
+                                AspectInfo aspectInfo = parseAspectClass(aspectClass, javaFile, cu);
+                                aspectList.add(aspectInfo);
+                                fileReferences.add(javaFile.toString());
+
+                                // Count advice by type
+                                for (AdviceInfo advice : aspectInfo.adviceList) {
+                                    adviceByType.put(advice.type, adviceByType.getOrDefault(advice.type, 0) + 1);
+
+                                    // Check if this advice matches the target
+                                    if (matchesTarget(advice, targetClass, targetMethod)) {
+                                        ObjectNode matchingAdv = objectMapper.createObjectNode();
+                                        matchingAdv.put("aspectClass", aspectInfo.className);
+                                        matchingAdv.put("adviceName", advice.name);
+                                        matchingAdv.put("adviceType", advice.type);
+                                        matchingAdv.put("pointcut", advice.pointcut);
+                                        matchingAdv.put("file", javaFile.toString());
+                                        matchingAdv.put("line", advice.line);
+                                        if (aspectInfo.order != null) {
+                                            matchingAdv.put("order", aspectInfo.order);
+                                        }
+                                        matchingAdvice.add(matchingAdv);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Skip files that can't be parsed
+                    }
+                });
+
+        // Build aspects array
+        for (AspectInfo aspectInfo : aspectList) {
+            ObjectNode aspectNode = objectMapper.createObjectNode();
+            aspectNode.put("className", aspectInfo.className);
+            aspectNode.put("file", aspectInfo.file);
+
+            if (aspectInfo.order != null) {
+                aspectNode.put("order", aspectInfo.order);
+            }
+
+            // Add advice methods
+            ArrayNode adviceArray = objectMapper.createArrayNode();
+            for (AdviceInfo advice : aspectInfo.adviceList) {
+                ObjectNode advNode = objectMapper.createObjectNode();
+                advNode.put("name", advice.name);
+                advNode.put("type", advice.type);
+                advNode.put("pointcut", advice.pointcut);
+
+                if (advice.returning != null) {
+                    advNode.put("returning", advice.returning);
+                }
+                if (advice.throwing != null) {
+                    advNode.put("throwing", advice.throwing);
+                }
+
+                adviceArray.add(advNode);
+            }
+
+            aspectNode.set("advice", adviceArray);
+            aspects.add(aspectNode);
+        }
+
+        // Sort aspects by order for execution order
+        List<AspectInfo> sortedAspects = new ArrayList<>(aspectList);
+        sortedAspects.sort((a, b) -> {
+            if (a.order == null && b.order == null) return 0;
+            if (a.order == null) return 1;
+            if (b.order == null) return -1;
+            return a.order.compareTo(b.order);
+        });
+
+        ArrayNode executionOrder = objectMapper.createArrayNode();
+        for (AspectInfo aspect : sortedAspects) {
+            ObjectNode orderNode = objectMapper.createObjectNode();
+            orderNode.put("className", aspect.className);
+            if (aspect.order != null) {
+                orderNode.put("order", aspect.order);
+            }
+            executionOrder.add(orderNode);
+        }
+
+        // Calculate totals
+        int totalAdvice = aspectList.stream().mapToInt(a -> a.adviceList.size()).sum();
+
+        result.set("aspects", aspects);
+        result.put("totalAspects", aspectList.size());
+        result.put("totalAdvice", totalAdvice);
+
+        ObjectNode adviceByTypeNode = objectMapper.createObjectNode();
+        adviceByType.forEach(adviceByTypeNode::put);
+        result.set("adviceByType", adviceByTypeNode);
+
+        result.set("matchingAdvice", matchingAdvice);
+        result.set("executionOrder", executionOrder);
+
+        ArrayNode fileRefsArray = objectMapper.createArrayNode();
+        fileReferences.forEach(fileRefsArray::add);
+        result.set("fileReferences", fileRefsArray);
+
+        return result;
+    }
+
+    /**
+     * Parse an @Aspect class and extract advice information
+     */
+    private AspectInfo parseAspectClass(ClassOrInterfaceDeclaration aspectClass, Path javaFile, CompilationUnit cu) {
+        AspectInfo aspectInfo = new AspectInfo();
+        aspectInfo.className = aspectClass.getNameAsString();
+        aspectInfo.file = javaFile.toString();
+
+        // Check for @Order annotation
+        aspectClass.getAnnotationByName("Order").ifPresent(orderAnn -> {
+            if (orderAnn.isSingleMemberAnnotationExpr()) {
+                try {
+                    aspectInfo.order = Integer.parseInt(
+                            orderAnn.asSingleMemberAnnotationExpr().getMemberValue().toString()
+                    );
+                } catch (NumberFormatException e) {
+                    // Ignore
+                }
+            }
+        });
+
+        // Find advice methods
+        List<MethodDeclaration> methods = aspectClass.getMethods();
+        for (MethodDeclaration method : methods) {
+            AdviceInfo advice = null;
+
+            if (method.getAnnotationByName("Before").isPresent()) {
+                advice = parseAdviceMethod(method, "Before");
+            } else if (method.getAnnotationByName("After").isPresent()) {
+                advice = parseAdviceMethod(method, "After");
+            } else if (method.getAnnotationByName("AfterReturning").isPresent()) {
+                advice = parseAdviceMethod(method, "AfterReturning");
+            } else if (method.getAnnotationByName("AfterThrowing").isPresent()) {
+                advice = parseAdviceMethod(method, "AfterThrowing");
+            } else if (method.getAnnotationByName("Around").isPresent()) {
+                advice = parseAdviceMethod(method, "Around");
+            }
+
+            if (advice != null) {
+                aspectInfo.adviceList.add(advice);
+            }
+        }
+
+        return aspectInfo;
+    }
+
+    /**
+     * Parse advice method and extract pointcut
+     */
+    private AdviceInfo parseAdviceMethod(MethodDeclaration method, String adviceType) {
+        AdviceInfo advice = new AdviceInfo();
+        advice.name = method.getNameAsString();
+        advice.type = adviceType;
+        advice.line = method.getBegin().map(pos -> pos.line).orElse(0);
+
+        Optional<AnnotationExpr> adviceAnn = method.getAnnotationByName(adviceType);
+
+        if (adviceAnn.isPresent()) {
+            AnnotationExpr ann = adviceAnn.get();
+
+            // Extract pointcut expression
+            if (ann.isSingleMemberAnnotationExpr()) {
+                advice.pointcut = ann.asSingleMemberAnnotationExpr()
+                        .getMemberValue()
+                        .toString()
+                        .replace("\"", "");
+            } else if (ann.isNormalAnnotationExpr()) {
+                ann.asNormalAnnotationExpr().getPairs().forEach(pair -> {
+                    String name = pair.getNameAsString();
+                    String value = pair.getValue().toString().replace("\"", "");
+
+                    if (name.equals("value") || name.equals("pointcut")) {
+                        advice.pointcut = value;
+                    } else if (name.equals("returning")) {
+                        advice.returning = value;
+                    } else if (name.equals("throwing")) {
+                        advice.throwing = value;
+                    }
+                });
+            }
+        }
+
+        if (advice.pointcut == null) {
+            advice.pointcut = "";
+        }
+
+        return advice;
+    }
+
+    /**
+     * Check if advice matches target class/method
+     */
+    private boolean matchesTarget(AdviceInfo advice, String targetClass, String targetMethod) {
+        if (targetClass == null && targetMethod == null) {
+            return false; // No target specified
+        }
+
+        String pointcut = advice.pointcut.toLowerCase();
+
+        // Simple pattern matching (can be enhanced)
+        if (targetClass != null && pointcut.contains(targetClass.toLowerCase())) {
+            if (targetMethod == null || pointcut.contains(targetMethod.toLowerCase())) {
+                return true;
+            }
+        }
+
+        if (targetMethod != null && pointcut.contains(targetMethod.toLowerCase())) {
+            return true;
+        }
+
+        // Check for wildcard patterns
+        if (pointcut.contains("execution(* *..*(..))")) {
+            return true; // Matches everything
+        }
+
+        return false;
+    }
+
+    /**
+     * Helper class to store aspect information
+     */
+    private static class AspectInfo {
+        String className;
+        String file;
+        Integer order;
+        List<AdviceInfo> adviceList = new ArrayList<>();
+    }
+
+    /**
+     * Helper class to store advice information
+     */
+    private static class AdviceInfo {
+        String name;
+        String type;
+        String pointcut;
+        int line;
+        String returning;
+        String throwing;
+    }
+
+    /**
+     * Tool 2.7: find_filters_and_order
+     * Finds servlet filters and interceptors with execution order
+     */
+    public ObjectNode findFiltersAndOrder(JsonNode params) throws Exception {
+        String filterType = params.has("filterType") ? params.get("filterType").asText() : "all";
+
+        System.err.println("Finding filters and interceptors: " + filterType);
+
+        ObjectNode result = objectMapper.createObjectNode();
+        List<FilterInfo> filterList = new ArrayList<>();
+        List<InterceptorInfo> interceptorList = new ArrayList<>();
+        Set<String> fileReferences = new HashSet<>();
+
+        // Search for Filter implementations
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            throw new Exception("Source directory not found: " + srcDir);
+        }
+
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (parseResult.isSuccessful() && parseResult.getResult().isPresent()) {
+                            CompilationUnit cu = parseResult.getResult().get();
+
+                            // Find Filter implementations
+                            if (filterType.equals("all") || filterType.equals("servlet")) {
+                                List<ClassOrInterfaceDeclaration> filters = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                        .filter(c -> implementsFilter(c))
+                                        .collect(Collectors.toList());
+
+                                for (ClassOrInterfaceDeclaration filter : filters) {
+                                    FilterInfo filterInfo = parseFilterClass(filter, javaFile, cu);
+                                    filterList.add(filterInfo);
+                                    fileReferences.add(javaFile.toString());
+                                }
+                            }
+
+                            // Find HandlerInterceptor implementations
+                            if (filterType.equals("all") || filterType.equals("interceptor")) {
+                                List<ClassOrInterfaceDeclaration> interceptors = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                        .filter(c -> implementsInterceptor(c))
+                                        .collect(Collectors.toList());
+
+                                for (ClassOrInterfaceDeclaration interceptor : interceptors) {
+                                    InterceptorInfo interceptorInfo = parseInterceptorClass(interceptor, javaFile, cu);
+                                    interceptorList.add(interceptorInfo);
+                                    fileReferences.add(javaFile.toString());
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Skip files that can't be parsed
+                    }
+                });
+
+        // Build filters array
+        ArrayNode filtersArray = objectMapper.createArrayNode();
+        for (FilterInfo filter : filterList) {
+            ObjectNode filterNode = objectMapper.createObjectNode();
+            filterNode.put("className", filter.className);
+            filterNode.put("file", filter.file);
+
+            if (filter.order != null) {
+                filterNode.put("order", filter.order);
+            }
+
+            if (filter.filterName != null) {
+                filterNode.put("filterName", filter.filterName);
+            }
+
+            ArrayNode urlPatterns = objectMapper.createArrayNode();
+            filter.urlPatterns.forEach(urlPatterns::add);
+            filterNode.set("urlPatterns", urlPatterns);
+
+            ArrayNode annotations = objectMapper.createArrayNode();
+            filter.annotations.forEach(annotations::add);
+            filterNode.set("annotations", annotations);
+
+            filtersArray.add(filterNode);
+        }
+
+        // Build interceptors array
+        ArrayNode interceptorsArray = objectMapper.createArrayNode();
+        for (InterceptorInfo interceptor : interceptorList) {
+            ObjectNode interceptorNode = objectMapper.createObjectNode();
+            interceptorNode.put("className", interceptor.className);
+            interceptorNode.put("file", interceptor.file);
+
+            if (interceptor.order != null) {
+                interceptorNode.put("order", interceptor.order);
+            }
+
+            ArrayNode pathPatterns = objectMapper.createArrayNode();
+            interceptor.pathPatterns.forEach(pathPatterns::add);
+            interceptorNode.set("pathPatterns", pathPatterns);
+
+            ArrayNode excludePatterns = objectMapper.createArrayNode();
+            interceptor.excludePatterns.forEach(excludePatterns::add);
+            interceptorNode.set("excludePatterns", excludePatterns);
+
+            ArrayNode annotations = objectMapper.createArrayNode();
+            interceptor.annotations.forEach(annotations::add);
+            interceptorNode.set("annotations", annotations);
+
+            interceptorsArray.add(interceptorNode);
+        }
+
+        // Sort by order for execution sequence
+        List<Object> combined = new ArrayList<>();
+        for (FilterInfo f : filterList) {
+            combined.add(new Object[]{f.className, "Filter", f.order != null ? f.order : Integer.MAX_VALUE});
+        }
+        for (InterceptorInfo i : interceptorList) {
+            combined.add(new Object[]{i.className, "Interceptor", i.order != null ? i.order : Integer.MAX_VALUE});
+        }
+
+        combined.sort((a, b) -> Integer.compare((Integer) ((Object[]) a)[2], (Integer) ((Object[]) b)[2]));
+
+        ArrayNode executionOrder = objectMapper.createArrayNode();
+        for (Object item : combined) {
+            Object[] arr = (Object[]) item;
+            ObjectNode orderNode = objectMapper.createObjectNode();
+            orderNode.put("className", (String) arr[0]);
+            orderNode.put("type", (String) arr[1]);
+
+            int order = (Integer) arr[2];
+            if (order != Integer.MAX_VALUE) {
+                orderNode.put("order", order);
+            }
+
+            executionOrder.add(orderNode);
+        }
+
+        // Build filter chain diagram
+        String filterChain = buildFilterChainDiagram(combined);
+
+        result.set("filters", filtersArray);
+        result.set("interceptors", interceptorsArray);
+        result.put("totalFilters", filterList.size());
+        result.put("totalInterceptors", interceptorList.size());
+        result.set("executionOrder", executionOrder);
+        result.put("filterChain", filterChain);
+
+        ArrayNode fileRefsArray = objectMapper.createArrayNode();
+        fileReferences.forEach(fileRefsArray::add);
+        result.set("fileReferences", fileRefsArray);
+
+        return result;
+    }
+
+    /**
+     * Check if class implements Filter
+     */
+    private boolean implementsFilter(ClassOrInterfaceDeclaration clazz) {
+        return clazz.getImplementedTypes().stream()
+                .anyMatch(t -> t.getNameAsString().equals("Filter") ||
+                             t.getNameAsString().contains("Filter"));
+    }
+
+    /**
+     * Check if class implements HandlerInterceptor
+     */
+    private boolean implementsInterceptor(ClassOrInterfaceDeclaration clazz) {
+        return clazz.getImplementedTypes().stream()
+                .anyMatch(t -> t.getNameAsString().contains("HandlerInterceptor") ||
+                             t.getNameAsString().contains("Interceptor"));
+    }
+
+    /**
+     * Parse filter class
+     */
+    private FilterInfo parseFilterClass(ClassOrInterfaceDeclaration clazz, Path javaFile, CompilationUnit cu) {
+        FilterInfo info = new FilterInfo();
+        info.className = clazz.getNameAsString();
+        info.file = javaFile.toString();
+
+        // Check for @Order annotation
+        clazz.getAnnotationByName("Order").ifPresent(orderAnn -> {
+            if (orderAnn.isSingleMemberAnnotationExpr()) {
+                try {
+                    info.order = Integer.parseInt(
+                            orderAnn.asSingleMemberAnnotationExpr().getMemberValue().toString()
+                    );
+                } catch (NumberFormatException e) {
+                    // Ignore
+                }
+            }
+        });
+
+        // Check for @WebFilter annotation
+        clazz.getAnnotationByName("WebFilter").ifPresent(webFilterAnn -> {
+            if (webFilterAnn.isNormalAnnotationExpr()) {
+                webFilterAnn.asNormalAnnotationExpr().getPairs().forEach(pair -> {
+                    String name = pair.getNameAsString();
+                    String value = pair.getValue().toString().replace("\"", "");
+
+                    if (name.equals("filterName")) {
+                        info.filterName = value;
+                    } else if (name.equals("urlPatterns") || name.equals("value")) {
+                        // Parse array of patterns
+                        info.urlPatterns.add(value);
+                    }
+                });
+            }
+        });
+
+        // Collect all annotations
+        clazz.getAnnotations().forEach(ann -> info.annotations.add(ann.getNameAsString()));
+
+        if (info.urlPatterns.isEmpty()) {
+            info.urlPatterns.add("/*"); // Default pattern
+        }
+
+        return info;
+    }
+
+    /**
+     * Parse interceptor class
+     */
+    private InterceptorInfo parseInterceptorClass(ClassOrInterfaceDeclaration clazz, Path javaFile, CompilationUnit cu) {
+        InterceptorInfo info = new InterceptorInfo();
+        info.className = clazz.getNameAsString();
+        info.file = javaFile.toString();
+
+        // Check for @Order annotation
+        clazz.getAnnotationByName("Order").ifPresent(orderAnn -> {
+            if (orderAnn.isSingleMemberAnnotationExpr()) {
+                try {
+                    info.order = Integer.parseInt(
+                            orderAnn.asSingleMemberAnnotationExpr().getMemberValue().toString()
+                    );
+                } catch (NumberFormatException e) {
+                    // Ignore
+                }
+            }
+        });
+
+        // Collect all annotations
+        clazz.getAnnotations().forEach(ann -> info.annotations.add(ann.getNameAsString()));
+
+        // Default patterns
+        info.pathPatterns.add("/**");
+
+        return info;
+    }
+
+    /**
+     * Build filter chain diagram
+     */
+    private String buildFilterChainDiagram(List<Object> combined) {
+        StringBuilder diagram = new StringBuilder();
+        diagram.append("HTTP Request\n");
+
+        for (Object item : combined) {
+            Object[] arr = (Object[]) item;
+            String className = (String) arr[0];
+            String type = (String) arr[1];
+            int order = (Integer) arr[2];
+
+            diagram.append("    ↓\n");
+            diagram.append("[").append(type).append("] ").append(className);
+
+            if (order != Integer.MAX_VALUE) {
+                diagram.append(" (order: ").append(order).append(")");
+            }
+
+            diagram.append("\n");
+        }
+
+        diagram.append("    ↓\n");
+        diagram.append("Controller");
+
+        return diagram.toString();
+    }
+
+    /**
+     * Helper class to store filter information
+     */
+    private static class FilterInfo {
+        String className;
+        String file;
+        Integer order;
+        String filterName;
+        List<String> urlPatterns = new ArrayList<>();
+        List<String> annotations = new ArrayList<>();
+    }
+
+    /**
+     * Helper class to store interceptor information
+     */
+    private static class InterceptorInfo {
+        String className;
+        String file;
+        Integer order;
+        List<String> pathPatterns = new ArrayList<>();
+        List<String> excludePatterns = new ArrayList<>();
+        List<String> annotations = new ArrayList<>();
     }
 
     // SPRING COMPONENT CONTEXT SERVER TOOLS (Server 3)
-    public ObjectNode analyzeControllerMethod(JsonNode params) {
-        return createStubResponse("analyze_controller_method", "Phase 4");
+    public ObjectNode analyzeControllerMethod(JsonNode params) throws Exception {
+        String controllerName = params.get("controllerName").asText();
+        String methodName = params.get("methodName").asText();
+
+        ObjectNode result = objectMapper.createObjectNode();
+        final ObjectNode[] foundMethod = {null};
+        final String[] fileRef = {null};
+
+        // Get source directory
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            result.put("error", "Source directory not found");
+            result.put("message", "src/main/java directory does not exist");
+            return result;
+        }
+
+        // Search for controller class
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        if (foundMethod[0] != null) return;
+
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (!parseResult.isSuccessful() || !parseResult.getResult().isPresent()) {
+                            return;
+                        }
+                        CompilationUnit cu = parseResult.getResult().get();
+
+                        // Find controller classes
+                        List<ClassOrInterfaceDeclaration> controllers = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                .filter(c -> isController(c))
+                                .filter(c -> c.getNameAsString().equals(controllerName) ||
+                                           c.getFullyQualifiedName().map(fqn -> fqn.equals(controllerName)).orElse(false))
+                                .collect(Collectors.toList());
+
+                        for (ClassOrInterfaceDeclaration controller : controllers) {
+                            // Find the method
+                            Optional<MethodDeclaration> methodOpt = controller.findAll(MethodDeclaration.class).stream()
+                                    .filter(m -> m.getNameAsString().equals(methodName))
+                                    .findFirst();
+
+                            if (methodOpt.isPresent()) {
+                                MethodDeclaration method = methodOpt.get();
+                                foundMethod[0] = analyzeMethod(method, controller, cu);
+                                fileRef[0] = javaFile.toString() + ":" + method.getBegin().map(pos -> String.valueOf(pos.line)).orElse("0");
+                                return;
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Continue searching
+                    }
+                });
+
+        if (foundMethod[0] == null) {
+            result.put("error", "Method not found");
+            result.put("message", "Method '" + methodName + "' not found in controller '" + controllerName + "'");
+            return result;
+        }
+
+        result.set("method", foundMethod[0]);
+        result.put("fileReference", fileRef[0]);
+
+        return result;
     }
 
-    public ObjectNode findControllerForEndpoint(JsonNode params) {
-        return createStubResponse("find_controller_for_endpoint", "Phase 4");
+    private boolean isController(ClassOrInterfaceDeclaration cls) {
+        return cls.getAnnotationByName("Controller").isPresent() ||
+               cls.getAnnotationByName("RestController").isPresent();
     }
 
-    public ObjectNode findImplementations(JsonNode params) {
-        return createStubResponse("find_implementations", "Phase 4");
+    private ObjectNode analyzeMethod(MethodDeclaration method, ClassOrInterfaceDeclaration controller, CompilationUnit cu) {
+        ObjectNode methodInfo = objectMapper.createObjectNode();
+
+        // Method signature
+        methodInfo.put("signature", method.getDeclarationAsString());
+        methodInfo.put("name", method.getNameAsString());
+
+        // Endpoint mapping
+        ObjectNode endpointMapping = extractEndpointMapping(method, controller);
+        if (endpointMapping != null) {
+            methodInfo.set("endpointMapping", endpointMapping);
+        }
+
+        // Parameters
+        ArrayNode parametersArray = objectMapper.createArrayNode();
+        for (Parameter param : method.getParameters()) {
+            ObjectNode paramInfo = objectMapper.createObjectNode();
+            paramInfo.put("name", param.getNameAsString());
+            paramInfo.put("type", param.getTypeAsString());
+
+            // Check for Spring annotations
+            String annotationType = null;
+            boolean required = true;
+            boolean validated = false;
+            String defaultValue = null;
+            String headerName = null;
+
+            if (param.getAnnotationByName("RequestBody").isPresent()) {
+                annotationType = "RequestBody";
+                AnnotationExpr ann = param.getAnnotationByName("RequestBody").get();
+                if (ann.isSingleMemberAnnotationExpr() || ann.isNormalAnnotationExpr()) {
+                    required = !getAnnotationBooleanValue(ann, "required", true);
+                }
+            } else if (param.getAnnotationByName("RequestParam").isPresent()) {
+                annotationType = "RequestParam";
+                AnnotationExpr ann = param.getAnnotationByName("RequestParam").get();
+                required = getAnnotationBooleanValue(ann, "required", true);
+                defaultValue = getAnnotationStringValue(ann, "defaultValue");
+            } else if (param.getAnnotationByName("PathVariable").isPresent()) {
+                annotationType = "PathVariable";
+            } else if (param.getAnnotationByName("RequestHeader").isPresent()) {
+                annotationType = "RequestHeader";
+                AnnotationExpr ann = param.getAnnotationByName("RequestHeader").get();
+                headerName = getAnnotationStringValue(ann, "value");
+                if (headerName == null) {
+                    headerName = getAnnotationStringValue(ann, "name");
+                }
+            }
+
+            // Check for validation annotations
+            if (param.getAnnotationByName("Valid").isPresent() ||
+                param.getAnnotationByName("Validated").isPresent()) {
+                validated = true;
+            }
+
+            if (annotationType != null) {
+                paramInfo.put("annotationType", annotationType);
+            }
+            paramInfo.put("required", required);
+            paramInfo.put("validated", validated);
+            if (defaultValue != null) {
+                paramInfo.put("defaultValue", defaultValue);
+            }
+            if (headerName != null) {
+                paramInfo.put("headerName", headerName);
+            }
+
+            // Collect all annotations
+            ArrayNode annotations = objectMapper.createArrayNode();
+            param.getAnnotations().forEach(ann -> annotations.add("@" + ann.getNameAsString()));
+            if (annotations.size() > 0) {
+                paramInfo.set("annotations", annotations);
+            }
+
+            parametersArray.add(paramInfo);
+        }
+        methodInfo.set("parameters", parametersArray);
+
+        // Return type
+        ObjectNode returnTypeInfo = objectMapper.createObjectNode();
+        Type returnType = method.getType();
+        String typeString = returnType.asString();
+
+        // Check for wrapper types
+        String wrapper = null;
+        String actualType = typeString;
+
+        if (typeString.startsWith("ResponseEntity<")) {
+            wrapper = "ResponseEntity";
+            actualType = typeString.substring(15, typeString.length() - 1);
+        } else if (typeString.startsWith("Mono<")) {
+            wrapper = "Mono";
+            actualType = typeString.substring(5, typeString.length() - 1);
+        } else if (typeString.startsWith("Flux<")) {
+            wrapper = "Flux";
+            actualType = typeString.substring(5, typeString.length() - 1);
+        }
+
+        returnTypeInfo.put("type", actualType);
+        if (wrapper != null) {
+            returnTypeInfo.put("wrapper", wrapper);
+        }
+        methodInfo.set("returnType", returnTypeInfo);
+
+        // Method body
+        method.getBody().ifPresent(body -> {
+            methodInfo.put("methodBody", body.toString());
+        });
+
+        return methodInfo;
     }
 
-    public ObjectNode findFeatureFlagUsage(JsonNode params) {
-        return createStubResponse("find_feature_flag_usage", "Phase 4");
+    private ObjectNode extractEndpointMapping(MethodDeclaration method, ClassOrInterfaceDeclaration controller) {
+        ObjectNode mapping = objectMapper.createObjectNode();
+
+        // Get base path from controller
+        String basePath = "";
+        Optional<AnnotationExpr> controllerMapping = controller.getAnnotationByName("RequestMapping");
+        if (controllerMapping.isPresent()) {
+            basePath = getAnnotationStringValue(controllerMapping.get(), "value");
+            if (basePath == null) {
+                basePath = getAnnotationStringValue(controllerMapping.get(), "path");
+            }
+            if (basePath == null) basePath = "";
+        }
+
+        // Get method path and HTTP method
+        String methodPath = "";
+        String httpMethod = null;
+        ArrayNode produces = objectMapper.createArrayNode();
+        ArrayNode consumes = objectMapper.createArrayNode();
+
+        // Check for specific mapping annotations
+        String[] mappingAnnotations = {"GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping", "RequestMapping"};
+        String[] httpMethods = {"GET", "POST", "PUT", "DELETE", "PATCH", null};
+
+        for (int i = 0; i < mappingAnnotations.length; i++) {
+            Optional<AnnotationExpr> ann = method.getAnnotationByName(mappingAnnotations[i]);
+            if (ann.isPresent()) {
+                AnnotationExpr annotation = ann.get();
+
+                // Get path
+                methodPath = getAnnotationStringValue(annotation, "value");
+                if (methodPath == null) {
+                    methodPath = getAnnotationStringValue(annotation, "path");
+                }
+                if (methodPath == null) methodPath = "";
+
+                // Get HTTP method
+                if (httpMethods[i] != null) {
+                    httpMethod = httpMethods[i];
+                } else {
+                    // For @RequestMapping, check method attribute
+                    httpMethod = getAnnotationStringValue(annotation, "method");
+                    if (httpMethod != null) {
+                        httpMethod = httpMethod.replace("RequestMethod.", "");
+                    }
+                }
+
+                // Get produces
+                String[] producesArray = getAnnotationStringArrayValue(annotation, "produces");
+                if (producesArray != null) {
+                    for (String p : producesArray) {
+                        produces.add(p);
+                    }
+                }
+
+                // Get consumes
+                String[] consumesArray = getAnnotationStringArrayValue(annotation, "consumes");
+                if (consumesArray != null) {
+                    for (String c : consumesArray) {
+                        consumes.add(c);
+                    }
+                }
+
+                break;
+            }
+        }
+
+        // Combine paths
+        String fullPath = basePath + methodPath;
+        if (!fullPath.startsWith("/")) {
+            fullPath = "/" + fullPath;
+        }
+
+        mapping.put("path", fullPath);
+        if (httpMethod != null) {
+            mapping.put("httpMethod", httpMethod);
+        }
+        if (produces.size() > 0) {
+            mapping.set("produces", produces);
+        }
+        if (consumes.size() > 0) {
+            mapping.set("consumes", consumes);
+        }
+
+        return mapping;
+    }
+
+    private boolean getAnnotationBooleanValue(AnnotationExpr annotation, String attribute, boolean defaultValue) {
+        if (annotation.isNormalAnnotationExpr()) {
+            NormalAnnotationExpr normalAnn = annotation.asNormalAnnotationExpr();
+            for (MemberValuePair pair : normalAnn.getPairs()) {
+                if (pair.getNameAsString().equals(attribute)) {
+                    return Boolean.parseBoolean(pair.getValue().toString());
+                }
+            }
+        }
+        return defaultValue;
+    }
+
+    private String getAnnotationStringValue(AnnotationExpr annotation, String attribute) {
+        if (annotation.isSingleMemberAnnotationExpr() && (attribute.equals("value") || attribute.equals("path"))) {
+            String value = annotation.asSingleMemberAnnotationExpr().getMemberValue().toString();
+            return value.replaceAll("^\"|\"$", "");
+        }
+
+        if (annotation.isNormalAnnotationExpr()) {
+            NormalAnnotationExpr normalAnn = annotation.asNormalAnnotationExpr();
+            for (MemberValuePair pair : normalAnn.getPairs()) {
+                if (pair.getNameAsString().equals(attribute)) {
+                    String value = pair.getValue().toString();
+                    return value.replaceAll("^\"|\"$", "").replaceAll("^\\{|\\}$", "");
+                }
+            }
+        }
+        return null;
+    }
+
+    private String[] getAnnotationStringArrayValue(AnnotationExpr annotation, String attribute) {
+        if (annotation.isNormalAnnotationExpr()) {
+            NormalAnnotationExpr normalAnn = annotation.asNormalAnnotationExpr();
+            for (MemberValuePair pair : normalAnn.getPairs()) {
+                if (pair.getNameAsString().equals(attribute)) {
+                    String value = pair.getValue().toString();
+                    value = value.replaceAll("^\\{|\\}$", "");
+                    String[] parts = value.split(",");
+                    for (int i = 0; i < parts.length; i++) {
+                        parts[i] = parts[i].trim().replaceAll("^\"|\"$", "");
+                    }
+                    return parts;
+                }
+            }
+        }
+        return null;
+    }
+
+    public ObjectNode findControllerForEndpoint(JsonNode params) throws Exception {
+        String endpoint = params.get("endpoint").asText();
+        String httpMethod = params.has("httpMethod") ? params.get("httpMethod").asText() : null;
+
+        ObjectNode result = objectMapper.createObjectNode();
+
+        // Get source directory
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            result.put("error", "Source directory not found");
+            return result;
+        }
+
+        // Normalize endpoint
+        if (!endpoint.startsWith("/")) {
+            endpoint = "/" + endpoint;
+        }
+
+        List<EndpointMapping> allEndpoints = new ArrayList<>();
+        final String searchEndpoint = endpoint;
+        final String searchMethod = httpMethod;
+
+        // Search for all controller endpoints
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (!parseResult.isSuccessful() || !parseResult.getResult().isPresent()) {
+                            return;
+                        }
+                        CompilationUnit cu = parseResult.getResult().get();
+
+                        // Find controller classes
+                        List<ClassOrInterfaceDeclaration> controllers = cu.findAll(ClassOrInterfaceDeclaration.class).stream()
+                                .filter(this::isController)
+                                .collect(Collectors.toList());
+
+                        for (ClassOrInterfaceDeclaration controller : controllers) {
+                            String basePath = getControllerBasePath(controller);
+                            String controllerName = controller.getNameAsString();
+
+                            // Find all methods with mappings
+                            controller.findAll(MethodDeclaration.class).forEach(method -> {
+                                ObjectNode methodMapping = extractEndpointMapping(method, controller);
+                                if (methodMapping != null && methodMapping.has("path")) {
+                                    EndpointMapping em = new EndpointMapping();
+                                    em.controller = controllerName;
+                                    em.method = method.getNameAsString();
+                                    em.path = methodMapping.get("path").asText();
+                                    em.httpMethod = methodMapping.has("httpMethod") ?
+                                                   methodMapping.get("httpMethod").asText() : "GET";
+                                    em.basePath = basePath;
+                                    em.methodPath = em.path.substring(basePath.length());
+                                    em.signature = method.getDeclarationAsString();
+                                    em.file = javaFile.toString();
+                                    em.line = method.getBegin().map(pos -> pos.line).orElse(0);
+                                    em.methodDeclaration = method;
+                                    em.controllerClass = controller;
+                                    allEndpoints.add(em);
+                                }
+                            });
+                        }
+                    } catch (Exception e) {
+                        // Continue searching
+                    }
+                });
+
+        // Try to find exact match
+        EndpointMapping exactMatch = findExactEndpointMatch(allEndpoints, searchEndpoint, searchMethod);
+
+        if (exactMatch == null) {
+            // Try path variable matching (e.g., /api/users/{id})
+            exactMatch = findPathVariableMatch(allEndpoints, searchEndpoint, searchMethod);
+        }
+
+        if (exactMatch != null) {
+            // Found handler
+            ObjectNode handler = objectMapper.createObjectNode();
+            handler.put("controller", exactMatch.controller);
+            handler.put("method", exactMatch.method);
+            handler.put("file", exactMatch.file + ":" + exactMatch.line);
+            result.set("handler", handler);
+
+            // Complete mapping
+            ObjectNode completeMapping = objectMapper.createObjectNode();
+            completeMapping.put("basePath", exactMatch.basePath);
+            completeMapping.put("methodPath", exactMatch.methodPath);
+            completeMapping.put("fullPath", exactMatch.path);
+            completeMapping.put("httpMethod", exactMatch.httpMethod);
+            result.set("completeMapping", completeMapping);
+
+            // Method signature
+            result.put("methodSignature", exactMatch.signature);
+
+            // Quick info
+            ObjectNode quickInfo = objectMapper.createObjectNode();
+            quickInfo.put("requestType", getRequestType(exactMatch.methodDeclaration));
+            quickInfo.put("responseType", getResponseType(exactMatch.methodDeclaration));
+            quickInfo.put("async", isAsync(exactMatch.methodDeclaration));
+            result.set("quickInfo", quickInfo);
+
+            // Related endpoints in same controller
+            ArrayNode relatedEndpoints = objectMapper.createArrayNode();
+            final String matchedController = exactMatch.controller;
+            allEndpoints.stream()
+                    .filter(em -> em.controller.equals(matchedController))
+                    .forEach(em -> {
+                        ObjectNode ep = objectMapper.createObjectNode();
+                        ep.put("method", em.controller);
+                        ep.put("path", em.path);
+                        ep.put("httpMethod", em.httpMethod);
+                        ep.put("handlerMethod", em.method);
+                        relatedEndpoints.add(ep);
+                    });
+            result.set("relatedEndpoints", relatedEndpoints);
+
+            result.put("fileReference", exactMatch.file);
+        } else {
+            // No handler found, find similar endpoints
+            List<EndpointMapping> similar = findSimilarEndpoints(allEndpoints, searchEndpoint, searchMethod);
+
+            ArrayNode similarEndpoints = objectMapper.createArrayNode();
+            similar.stream().limit(10).forEach(em -> {
+                ObjectNode ep = objectMapper.createObjectNode();
+                ep.put("path", em.path);
+                ep.put("httpMethod", em.httpMethod);
+                ep.put("controller", em.controller);
+                ep.put("method", em.method);
+                similarEndpoints.add(ep);
+            });
+
+            if (similarEndpoints.size() > 0) {
+                result.set("similarEndpoints", similarEndpoints);
+            }
+        }
+
+        return result;
+    }
+
+    private String getControllerBasePath(ClassOrInterfaceDeclaration controller) {
+        Optional<AnnotationExpr> requestMapping = controller.getAnnotationByName("RequestMapping");
+        if (requestMapping.isPresent()) {
+            String basePath = getAnnotationStringValue(requestMapping.get(), "value");
+            if (basePath == null) {
+                basePath = getAnnotationStringValue(requestMapping.get(), "path");
+            }
+            if (basePath != null && !basePath.isEmpty()) {
+                return basePath.startsWith("/") ? basePath : "/" + basePath;
+            }
+        }
+        return "";
+    }
+
+    private EndpointMapping findExactEndpointMatch(List<EndpointMapping> endpoints, String path, String httpMethod) {
+        return endpoints.stream()
+                .filter(em -> em.path.equals(path))
+                .filter(em -> httpMethod == null || em.httpMethod.equalsIgnoreCase(httpMethod))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private EndpointMapping findPathVariableMatch(List<EndpointMapping> endpoints, String path, String httpMethod) {
+        for (EndpointMapping em : endpoints) {
+            if (httpMethod != null && !em.httpMethod.equalsIgnoreCase(httpMethod)) {
+                continue;
+            }
+
+            // Convert path variables to regex: /api/users/{id} -> /api/users/[^/]+
+            String pattern = em.path.replaceAll("\\{[^}]+\\}", "[^/]+");
+            if (path.matches(pattern)) {
+                return em;
+            }
+        }
+        return null;
+    }
+
+    private List<EndpointMapping> findSimilarEndpoints(List<EndpointMapping> endpoints, String path, String httpMethod) {
+        // Find endpoints with similar paths
+        return endpoints.stream()
+                .filter(em -> httpMethod == null || em.httpMethod.equalsIgnoreCase(httpMethod))
+                .sorted((a, b) -> {
+                    int scoreA = calculateSimilarityScore(a.path, path);
+                    int scoreB = calculateSimilarityScore(b.path, path);
+                    return Integer.compare(scoreB, scoreA);
+                })
+                .collect(Collectors.toList());
+    }
+
+    private int calculateSimilarityScore(String path1, String path2) {
+        String[] parts1 = path1.split("/");
+        String[] parts2 = path2.split("/");
+
+        int score = 0;
+        int minLen = Math.min(parts1.length, parts2.length);
+
+        for (int i = 0; i < minLen; i++) {
+            if (parts1[i].equals(parts2[i])) {
+                score += 10;
+            } else if (parts1[i].startsWith("{") || parts2[i].startsWith("{")) {
+                score += 5;
+            }
+        }
+
+        return score;
+    }
+
+    private String getRequestType(MethodDeclaration method) {
+        for (Parameter param : method.getParameters()) {
+            if (param.getAnnotationByName("RequestBody").isPresent()) {
+                return param.getTypeAsString();
+            }
+        }
+        return "N/A";
+    }
+
+    private String getResponseType(MethodDeclaration method) {
+        Type returnType = method.getType();
+        String typeString = returnType.asString();
+
+        // Unwrap wrapper types
+        if (typeString.startsWith("ResponseEntity<")) {
+            return typeString.substring(15, typeString.length() - 1);
+        } else if (typeString.startsWith("Mono<")) {
+            return typeString.substring(5, typeString.length() - 1);
+        } else if (typeString.startsWith("Flux<")) {
+            return typeString.substring(5, typeString.length() - 1);
+        }
+
+        return typeString;
+    }
+
+    private boolean isAsync(MethodDeclaration method) {
+        String returnType = method.getTypeAsString();
+        return returnType.startsWith("Mono<") ||
+               returnType.startsWith("Flux<") ||
+               returnType.startsWith("CompletableFuture<");
+    }
+
+    // Helper class for endpoint mapping
+    private static class EndpointMapping {
+        String controller;
+        String method;
+        String path;
+        String httpMethod;
+        String basePath;
+        String methodPath;
+        String signature;
+        String file;
+        int line;
+        MethodDeclaration methodDeclaration;
+        ClassOrInterfaceDeclaration controllerClass;
+    }
+
+    public ObjectNode findImplementations(JsonNode params) throws Exception {
+        String targetName = params.get("interfaceOrAbstractClass").asText();
+
+        ObjectNode result = objectMapper.createObjectNode();
+
+        // Get source directory
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            result.put("error", "Source directory not found");
+            return result;
+        }
+
+        // Find the parent type (interface or abstract class)
+        final ClassOrInterfaceDeclaration[] parentType = {null};
+        final String[] parentFile = {null};
+        final CompilationUnit[] parentCu = {null};
+
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        if (parentType[0] != null) return;
+
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (!parseResult.isSuccessful() || !parseResult.getResult().isPresent()) {
+                            return;
+                        }
+                        CompilationUnit cu = parseResult.getResult().get();
+
+                        List<ClassOrInterfaceDeclaration> classes = cu.findAll(ClassOrInterfaceDeclaration.class);
+                        for (ClassOrInterfaceDeclaration cls : classes) {
+                            if (cls.getNameAsString().equals(targetName) ||
+                                cls.getFullyQualifiedName().map(fqn -> fqn.equals(targetName)).orElse(false)) {
+                                if (cls.isInterface() || cls.isAbstract()) {
+                                    parentType[0] = cls;
+                                    parentFile[0] = javaFile.toString();
+                                    parentCu[0] = cu;
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Continue searching
+                    }
+                });
+
+        if (parentType[0] == null) {
+            result.put("error", "Interface or abstract class not found");
+            return result;
+        }
+
+        // Parent type info
+        ObjectNode parentInfo = objectMapper.createObjectNode();
+        parentInfo.put("name", parentType[0].getNameAsString());
+        parentInfo.put("type", parentType[0].isInterface() ? "Interface" : "Abstract Class");
+        parentInfo.put("file", parentFile[0]);
+        parentInfo.put("package", parentCu[0].getPackageDeclaration()
+                .map(pd -> pd.getNameAsString()).orElse(""));
+        result.set("parentType", parentInfo);
+
+        // Get methods defined in parent
+        ArrayNode methodsArray = objectMapper.createArrayNode();
+        List<String> parentMethods = new ArrayList<>();
+        parentType[0].findAll(MethodDeclaration.class).forEach(method -> {
+            if (!method.isPrivate()) {
+                String signature = getMethodSignature(method);
+                methodsArray.add(signature);
+                parentMethods.add(signature);
+            }
+        });
+        result.set("methods", methodsArray);
+
+        // Find all implementations
+        List<ImplementationInfo> implementations = new ArrayList<>();
+        final ClassOrInterfaceDeclaration finalParent = parentType[0];
+
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (!parseResult.isSuccessful() || !parseResult.getResult().isPresent()) {
+                            return;
+                        }
+                        CompilationUnit cu = parseResult.getResult().get();
+
+                        List<ClassOrInterfaceDeclaration> classes = cu.findAll(ClassOrInterfaceDeclaration.class);
+                        for (ClassOrInterfaceDeclaration cls : classes) {
+                            if (implementsOrExtends(cls, finalParent.getNameAsString())) {
+                                ImplementationInfo impl = new ImplementationInfo();
+                                impl.className = cls.getNameAsString();
+                                impl.file = javaFile.toString();
+                                impl.packageName = cu.getPackageDeclaration()
+                                        .map(pd -> pd.getNameAsString()).orElse("");
+                                impl.isAbstract = cls.isAbstract();
+                                impl.classDeclaration = cls;
+
+                                // Get annotations
+                                cls.getAnnotations().forEach(ann -> {
+                                    impl.annotations.add("@" + ann.getNameAsString());
+                                });
+
+                                // Check which methods are overridden
+                                List<String> classMethods = new ArrayList<>();
+                                cls.findAll(MethodDeclaration.class).forEach(method -> {
+                                    if (!method.isPrivate()) {
+                                        classMethods.add(getMethodSignature(method));
+                                    }
+                                });
+
+                                for (String parentMethod : parentMethods) {
+                                    if (isMethodOverridden(parentMethod, classMethods)) {
+                                        impl.overriddenMethods.add(parentMethod);
+                                    } else if (!cls.isAbstract()) {
+                                        impl.notImplementedMethods.add(parentMethod);
+                                    }
+                                }
+
+                                // Additional methods
+                                for (String classMethod : classMethods) {
+                                    if (!isMethodOverridden(classMethod, parentMethods)) {
+                                        impl.additionalMethods.add(classMethod);
+                                    }
+                                }
+
+                                implementations.add(impl);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Continue searching
+                    }
+                });
+
+        // Format implementations
+        ArrayNode implArray = objectMapper.createArrayNode();
+        for (ImplementationInfo impl : implementations) {
+            ObjectNode implNode = objectMapper.createObjectNode();
+            implNode.put("className", impl.className);
+            implNode.put("file", impl.file);
+            implNode.put("package", impl.packageName);
+            implNode.put("isAbstract", impl.isAbstract);
+
+            ArrayNode overriddenArray = objectMapper.createArrayNode();
+            impl.overriddenMethods.forEach(overriddenArray::add);
+            implNode.set("overriddenMethods", overriddenArray);
+
+            ArrayNode notImplArray = objectMapper.createArrayNode();
+            impl.notImplementedMethods.forEach(notImplArray::add);
+            implNode.set("notImplementedMethods", notImplArray);
+
+            ArrayNode additionalArray = objectMapper.createArrayNode();
+            impl.additionalMethods.forEach(additionalArray::add);
+            implNode.set("additionalMethods", additionalArray);
+
+            ArrayNode annotationsArray = objectMapper.createArrayNode();
+            impl.annotations.forEach(annotationsArray::add);
+            implNode.set("annotations", annotationsArray);
+
+            implArray.add(implNode);
+        }
+        result.set("implementations", implArray);
+
+        // Build hierarchy
+        String hierarchy = buildInheritanceHierarchy(parentType[0].getNameAsString(), implementations);
+        result.put("hierarchy", hierarchy);
+
+        // Summary
+        ObjectNode summary = objectMapper.createObjectNode();
+        summary.put("total", implementations.size());
+        summary.put("direct", implementations.size());
+        summary.put("indirect", 0);
+        summary.put("abstract", (int) implementations.stream().filter(i -> i.isAbstract).count());
+        result.set("summary", summary);
+
+        // Usage patterns
+        ObjectNode usagePatterns = objectMapper.createObjectNode();
+        boolean isStrategyPattern = implementations.size() >= 3 && !parentType[0].isAbstract();
+        usagePatterns.put("strategyPattern", isStrategyPattern);
+        usagePatterns.put("polymorphicUsage", "Multiple implementations suggest polymorphic design");
+        result.set("usagePatterns", usagePatterns);
+
+        // File references
+        ArrayNode fileRefs = objectMapper.createArrayNode();
+        fileRefs.add(parentFile[0]);
+        implementations.forEach(impl -> fileRefs.add(impl.file));
+        result.set("fileReferences", fileRefs);
+
+        return result;
+    }
+
+    private boolean implementsOrExtends(ClassOrInterfaceDeclaration cls, String targetName) {
+        // Check implemented types
+        for (ClassOrInterfaceType implementedType : cls.getImplementedTypes()) {
+            if (implementedType.getNameAsString().equals(targetName)) {
+                return true;
+            }
+        }
+
+        // Check extended types
+        for (ClassOrInterfaceType extendedType : cls.getExtendedTypes()) {
+            if (extendedType.getNameAsString().equals(targetName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private String getMethodSignature(MethodDeclaration method) {
+        StringBuilder sig = new StringBuilder();
+        sig.append(method.getNameAsString()).append("(");
+
+        List<String> paramTypes = new ArrayList<>();
+        for (Parameter param : method.getParameters()) {
+            paramTypes.add(param.getTypeAsString());
+        }
+        sig.append(String.join(", ", paramTypes));
+        sig.append(")");
+
+        return sig.toString();
+    }
+
+    private boolean isMethodOverridden(String methodSignature, List<String> methods) {
+        String methodName = methodSignature.substring(0, methodSignature.indexOf("("));
+        for (String method : methods) {
+            if (method.startsWith(methodName + "(")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String buildInheritanceHierarchy(String parentName, List<ImplementationInfo> implementations) {
+        StringBuilder hierarchy = new StringBuilder();
+        hierarchy.append(parentName).append("\n");
+
+        for (int i = 0; i < implementations.size(); i++) {
+            ImplementationInfo impl = implementations.get(i);
+            boolean isLast = (i == implementations.size() - 1);
+            String prefix = isLast ? "└── " : "├── ";
+            hierarchy.append(prefix).append(impl.className);
+            if (impl.isAbstract) {
+                hierarchy.append(" (abstract)");
+            }
+            hierarchy.append("\n");
+        }
+
+        return hierarchy.toString();
+    }
+
+    // Helper class for implementation info
+    private static class ImplementationInfo {
+        String className;
+        String file;
+        String packageName;
+        boolean isAbstract;
+        List<String> overriddenMethods = new ArrayList<>();
+        List<String> notImplementedMethods = new ArrayList<>();
+        List<String> additionalMethods = new ArrayList<>();
+        List<String> annotations = new ArrayList<>();
+        ClassOrInterfaceDeclaration classDeclaration;
+    }
+
+    public ObjectNode findFeatureFlagUsage(JsonNode params) throws Exception {
+        String flagIdentifier = params.has("flagIdentifier") ? params.get("flagIdentifier").asText() : null;
+        String searchPattern = params.has("searchPattern") ? params.get("searchPattern").asText() : null;
+
+        ObjectNode result = objectMapper.createObjectNode();
+
+        // Get source directory
+        Path srcDir = workspaceRoot.resolve("src/main/java");
+        if (!Files.exists(srcDir)) {
+            result.put("error", "Source directory not found");
+            return result;
+        }
+
+        // Common feature flag patterns to search for
+        List<String> patterns = new ArrayList<>();
+        if (searchPattern != null) {
+            patterns.add(searchPattern);
+        } else {
+            patterns.add("isFeatureEnabled");
+            patterns.add("isEnabled");
+            patterns.add("hasFeature");
+            patterns.add("getFeatureFlag");
+            patterns.add("featureEnabled");
+            patterns.add("checkFeature");
+        }
+
+        Map<String, FeatureFlagInfo> flagMap = new HashMap<>();
+        Set<String> fileReferences = new HashSet<>();
+
+        // Search for feature flag usages
+        Files.walk(srcDir)
+                .filter(p -> p.toString().endsWith(".java"))
+                .forEach(javaFile -> {
+                    try {
+                        ParseResult<CompilationUnit> parseResult = javaParser.parse(javaFile.toFile());
+                        if (!parseResult.isSuccessful() || !parseResult.getResult().isPresent()) {
+                            return;
+                        }
+                        CompilationUnit cu = parseResult.getResult().get();
+
+                        // Find all method calls that match feature flag patterns
+                        cu.findAll(MethodCallExpr.class).forEach(methodCall -> {
+                            String methodName = methodCall.getNameAsString();
+
+                            // Check if this matches a feature flag pattern
+                            for (String pattern : patterns) {
+                                if (methodName.toLowerCase().contains(pattern.toLowerCase())) {
+                                    // Try to extract flag name from arguments
+                                    String flagName = extractFlagName(methodCall);
+                                    if (flagName != null && (flagIdentifier == null || flagName.equals(flagIdentifier))) {
+                                        FeatureFlagInfo flagInfo = flagMap.computeIfAbsent(flagName, k -> new FeatureFlagInfo(flagName));
+
+                                        // Create usage info
+                                        FlagUsage usage = new FlagUsage();
+                                        usage.file = javaFile.toString();
+                                        usage.line = methodCall.getBegin().map(pos -> pos.line).orElse(0);
+
+                                        // Find containing method and class
+                                        methodCall.findAncestor(MethodDeclaration.class).ifPresent(method -> {
+                                            usage.methodName = method.getNameAsString();
+                                        });
+                                        methodCall.findAncestor(ClassOrInterfaceDeclaration.class).ifPresent(cls -> {
+                                            usage.className = cls.getNameAsString();
+                                        });
+
+                                        // Analyze conditional logic
+                                        analyzeConditionalLogic(methodCall, usage);
+
+                                        flagInfo.usages.add(usage);
+                                        fileReferences.add(javaFile.toString());
+                                    }
+                                }
+                            }
+                        });
+
+                        // Also check for @ConditionalOnProperty annotations
+                        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(cls -> {
+                            cls.getAnnotations().forEach(ann -> {
+                                if (ann.getNameAsString().equals("ConditionalOnProperty")) {
+                                    String flagName = extractFlagFromAnnotation(ann);
+                                    if (flagName != null && (flagIdentifier == null || flagName.equals(flagIdentifier))) {
+                                        FeatureFlagInfo flagInfo = flagMap.computeIfAbsent(flagName, k -> new FeatureFlagInfo(flagName));
+
+                                        FlagUsage usage = new FlagUsage();
+                                        usage.file = javaFile.toString();
+                                        usage.line = cls.getBegin().map(pos -> pos.line).orElse(0);
+                                        usage.className = cls.getNameAsString();
+                                        usage.methodName = "<class-level>";
+                                        usage.conditionType = "annotation";
+                                        usage.code = "@" + ann.toString();
+
+                                        flagInfo.usages.add(usage);
+                                        fileReferences.add(javaFile.toString());
+                                    }
+                                }
+                            });
+                        });
+                    } catch (Exception e) {
+                        // Continue searching
+                    }
+                });
+
+        // Format results
+        ArrayNode flagsArray = objectMapper.createArrayNode();
+        int totalUsages = 0;
+
+        for (FeatureFlagInfo flagInfo : flagMap.values()) {
+            ObjectNode flagNode = objectMapper.createObjectNode();
+            flagNode.put("name", flagInfo.name);
+
+            // Usages
+            ArrayNode usagesArray = objectMapper.createArrayNode();
+            for (FlagUsage usage : flagInfo.usages) {
+                ObjectNode usageNode = objectMapper.createObjectNode();
+                usageNode.put("file", usage.file);
+                usageNode.put("line", usage.line);
+                usageNode.put("className", usage.className);
+                usageNode.put("methodName", usage.methodName);
+                if (usage.code != null) {
+                    usageNode.put("code", usage.code);
+                }
+                if (usage.conditionType != null) {
+                    usageNode.put("conditionType", usage.conditionType);
+                }
+                if (usage.enabledBranch != null || usage.disabledBranch != null) {
+                    ObjectNode branches = objectMapper.createObjectNode();
+                    if (usage.enabledBranch != null) {
+                        branches.put("enabled", usage.enabledBranch);
+                    }
+                    if (usage.disabledBranch != null) {
+                        branches.put("disabled", usage.disabledBranch);
+                    }
+                    usageNode.set("branches", branches);
+                }
+                usagesArray.add(usageNode);
+                totalUsages++;
+            }
+            flagNode.set("usages", usagesArray);
+
+            flagsArray.add(flagNode);
+        }
+
+        result.set("flags", flagsArray);
+        result.put("totalFlags", flagMap.size());
+        result.put("totalUsages", totalUsages);
+
+        // Summary
+        ObjectNode summary = objectMapper.createObjectNode();
+        summary.put("totalFlags", flagMap.size());
+        summary.put("totalUsages", totalUsages);
+        summary.put("filesAffected", fileReferences.size());
+        result.set("summary", summary);
+
+        // Recommendations
+        ArrayNode recommendations = objectMapper.createArrayNode();
+        if (totalUsages > 20) {
+            recommendations.add("⚠️ High number of feature flags detected - consider consolidation");
+        }
+        for (FeatureFlagInfo flag : flagMap.values()) {
+            if (flag.usages.size() > 5) {
+                recommendations.add("⚠️ Flag '" + flag.name + "' has " + flag.usages.size() + " usages");
+            }
+        }
+        if (recommendations.size() > 0) {
+            result.set("recommendations", recommendations);
+        }
+
+        // File references
+        ArrayNode fileRefsArray = objectMapper.createArrayNode();
+        fileReferences.forEach(fileRefsArray::add);
+        result.set("fileReferences", fileRefsArray);
+
+        return result;
+    }
+
+    private String extractFlagName(MethodCallExpr methodCall) {
+        // Try to get flag name from first string argument
+        if (methodCall.getArguments().size() > 0) {
+            Expression firstArg = methodCall.getArgument(0);
+            if (firstArg.isStringLiteralExpr()) {
+                return firstArg.asStringLiteralExpr().getValue();
+            }
+        }
+        return null;
+    }
+
+    private String extractFlagFromAnnotation(AnnotationExpr annotation) {
+        if (annotation.isSingleMemberAnnotationExpr()) {
+            Expression value = annotation.asSingleMemberAnnotationExpr().getMemberValue();
+            if (value.isStringLiteralExpr()) {
+                return value.asStringLiteralExpr().getValue();
+            }
+        } else if (annotation.isNormalAnnotationExpr()) {
+            for (MemberValuePair pair : annotation.asNormalAnnotationExpr().getPairs()) {
+                if (pair.getNameAsString().equals("value") || pair.getNameAsString().equals("name")) {
+                    if (pair.getValue().isStringLiteralExpr()) {
+                        return pair.getValue().asStringLiteralExpr().getValue();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private void analyzeConditionalLogic(MethodCallExpr methodCall, FlagUsage usage) {
+        // Find parent if statement
+        methodCall.findAncestor(IfStmt.class).ifPresent(ifStmt -> {
+            usage.conditionType = "if-else";
+
+            // Get code snippet
+            if (ifStmt.getThenStmt() != null) {
+                String thenCode = ifStmt.getThenStmt().toString();
+                if (thenCode.length() > 100) {
+                    thenCode = thenCode.substring(0, 100) + "...";
+                }
+                usage.enabledBranch = thenCode;
+            }
+
+            if (ifStmt.getElseStmt().isPresent()) {
+                String elseCode = ifStmt.getElseStmt().get().toString();
+                if (elseCode.length() > 100) {
+                    elseCode = elseCode.substring(0, 100) + "...";
+                }
+                usage.disabledBranch = elseCode;
+            }
+
+            // Full code context
+            String code = ifStmt.toString();
+            if (code.length() > 200) {
+                code = code.substring(0, 200) + "...";
+            }
+            usage.code = code;
+        });
+
+        // Check for ternary operator
+        methodCall.findAncestor(ConditionalExpr.class).ifPresent(ternary -> {
+            usage.conditionType = "ternary";
+            usage.enabledBranch = ternary.getThenExpr().toString();
+            usage.disabledBranch = ternary.getElseExpr().toString();
+            usage.code = ternary.toString();
+        });
+    }
+
+    // Helper classes for feature flags
+    private static class FeatureFlagInfo {
+        String name;
+        List<FlagUsage> usages = new ArrayList<>();
+
+        FeatureFlagInfo(String name) {
+            this.name = name;
+        }
+    }
+
+    private static class FlagUsage {
+        String file;
+        int line;
+        String className;
+        String methodName;
+        String code;
+        String conditionType;
+        String enabledBranch;
+        String disabledBranch;
     }
 
     /**

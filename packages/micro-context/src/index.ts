@@ -8,6 +8,7 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { JavaParserClient } from './java-parser-client.js';
+import { MCPLogger } from './logger.js';
 import { resolveSymbol } from './tools/resolve-symbol.js';
 import { getFunctionDefinition } from './tools/get-function-definition.js';
 import { getDtoStructure } from './tools/get-dto-structure.js';
@@ -44,6 +45,10 @@ const config = {
 console.error('🚀 Starting Spring Boot Micro Context MCP Server');
 console.error(`📁 Workspace: ${workspaceRoot}`);
 console.error(`📦 Package filter: ${config.packageInclude || 'none'}`);
+
+// Initialize logger
+const logger = new MCPLogger('micro-context', workspaceRoot);
+console.error(`📝 Logging to: ${logger.getLogFilePath()}`);
 
 // Initialize JavaParser client
 let javaParserClient: JavaParserClient;
@@ -155,6 +160,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Register tool call handler
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const startTime = Date.now();
 
   try {
     let result: string;
@@ -184,6 +190,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
 
+    const executionTimeMs = Date.now() - startTime;
+
+    // Log successful tool call
+    logger.logToolCall(name, args, {
+      response: result,
+      executionTimeMs,
+    });
+
     return {
       content: [
         {
@@ -193,7 +207,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   } catch (error: any) {
+    const executionTimeMs = Date.now() - startTime;
     const errorMessage = error.message || String(error);
+
+    // Log failed tool call
+    logger.logToolCall(name, args, {
+      error: errorMessage,
+      executionTimeMs,
+    });
 
     return {
       content: [

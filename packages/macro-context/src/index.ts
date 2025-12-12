@@ -8,10 +8,14 @@ import {
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
 import { JavaParserClient } from '@spring-boot-mcp/micro-context/dist/java-parser-client.js';
+import { MCPLogger } from './logger.js';
 import { buildMethodCallChain } from './tools/build-method-call-chain.js';
 import { traceDataTransformation } from './tools/trace-data-transformation.js';
 import { findAllUsages } from './tools/find-all-usages.js';
 import { traceEndpointToRepository } from './tools/trace-endpoint-to-repository.js';
+import { findEntityByTable } from './tools/find-entity-by-table.js';
+import { findAdviceAdapters } from './tools/find-advice-adapters.js';
+import { findFiltersAndOrder } from './tools/find-filters-and-order.js';
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -44,6 +48,10 @@ const config = {
 console.error('🚀 Starting Spring Boot Macro Context MCP Server');
 console.error(`📁 Workspace: ${workspaceRoot}`);
 console.error(`📦 Package filter: ${config.packageInclude || 'none'}`);
+
+// Initialize logger
+const logger = new MCPLogger('macro-context', workspaceRoot);
+console.error(`📝 Logging to: ${logger.getLogFilePath()}`);
 
 // Initialize JavaParser client
 let javaParserClient: JavaParserClient;
@@ -222,6 +230,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Register tool call handler
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const startTime = Date.now();
 
   try {
     let result: string;
@@ -252,19 +261,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
 
       case 'find_entity_by_table':
+        result = await findEntityByTable(javaParserClient, {
+          table_name: (args as any).table_name,
+          schema: (args as any).schema,
+        });
+        break;
+
       case 'find_advice_adapters':
+        result = await findAdviceAdapters(javaParserClient, {
+          target_class: (args as any).target_class,
+          target_method: (args as any).target_method,
+        });
+        break;
+
       case 'find_filters_and_order':
-        result = `# Tool Not Yet Implemented: ${name}\n\n`;
-        result += `This tool will be implemented in Phase 3.\n\n`;
-        result += `**Requested Parameters:**\n`;
-        result += '```json\n';
-        result += JSON.stringify(args, null, 2);
-        result += '\n```\n';
+        result = await findFiltersAndOrder(javaParserClient, {
+          filter_type: (args as any).filter_type,
+        });
         break;
 
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
+
+    const executionTimeMs = Date.now() - startTime;
+
+    // Log successful tool call
+    logger.logToolCall(name, args, {
+      response: result,
+      executionTimeMs,
+    });
 
     return {
       content: [
@@ -275,7 +301,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ],
     };
   } catch (error: any) {
+    const executionTimeMs = Date.now() - startTime;
     const errorMessage = error.message || String(error);
+
+    // Log failed tool call
+    logger.logToolCall(name, args, {
+      error: errorMessage,
+      executionTimeMs,
+    });
 
     return {
       content: [

@@ -122,7 +122,8 @@ ls -lh packages/java-parser-service/target/java-parser-service-1.0.0.jar
 
 ## ⚙️ Configuration for IntelliJ Cody
 
-> 📘 **For detailed Windows setup instructions, see [SETUP_GUIDE.md](./SETUP_GUIDE.md)**
+> 📘 **For detailed configuration instructions, see [MCP_CONFIGURATION.md](./docs/MCP_CONFIGURATION.md)**
+> 📘 **For Windows setup instructions, see [SETUP_GUIDE.md](./docs/SETUP_GUIDE.md)**
 
 ### 1. Locate Cody Settings File
 
@@ -158,7 +159,9 @@ Copy `cody_settings.example.json` to the location above, or add this to your exi
       ],
       "env": {
         "PACKAGE_INCLUDE": "",
-        "PACKAGE_EXCLUDE": ""
+        "PACKAGE_EXCLUDE": "",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
       }
     },
     "spring-macro-context": {
@@ -168,7 +171,22 @@ Copy `cody_settings.example.json` to the location above, or add this to your exi
         "${workspaceFolder}"
       ],
       "env": {
-        "CALL_CHAIN_MAX_DEPTH": "15"
+        "CALL_CHAIN_MAX_DEPTH": "15",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
+      }
+    },
+    "spring-component": {
+      "command": "node",
+      "args": [
+        "C:\\Projects\\CodyMcpServers\\packages\\spring-component\\dist\\index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "PACKAGE_INCLUDE": "",
+        "PACKAGE_EXCLUDE": "",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
       }
     }
   }
@@ -187,7 +205,9 @@ Copy `cody_settings.example.json` to the location above, or add this to your exi
       ],
       "env": {
         "PACKAGE_INCLUDE": "",
-        "PACKAGE_EXCLUDE": ""
+        "PACKAGE_EXCLUDE": "",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
       }
     },
     "spring-macro-context": {
@@ -197,7 +217,22 @@ Copy `cody_settings.example.json` to the location above, or add this to your exi
         "${workspaceFolder}"
       ],
       "env": {
-        "CALL_CHAIN_MAX_DEPTH": "15"
+        "CALL_CHAIN_MAX_DEPTH": "15",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
+      }
+    },
+    "spring-component": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/CodyMcpServers/packages/spring-component/dist/index.js",
+        "${workspaceFolder}"
+      ],
+      "env": {
+        "PACKAGE_INCLUDE": "",
+        "PACKAGE_EXCLUDE": "",
+        "MCP_LOGGING": "true",
+        "MCP_DEBUG": "false"
       }
     }
   }
@@ -209,17 +244,33 @@ Copy `cody_settings.example.json` to the location above, or add this to your exi
 - Windows: Use double backslashes (`C:\\Projects\\...`)
 - Mac/Linux: Use forward slashes (`/home/user/...`)
 
-### 2. Configure for Your Project
+### 3. Configure for Your Project
 
 Update environment variables to match your Spring Boot project:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| **PACKAGE_INCLUDE** | Your base package pattern | `com.yourcompany.*` |
-| **PACKAGE_EXCLUDE** | Packages to exclude | `com.yourcompany.generated.*` |
-| **DTO_PACKAGES** | Where DTOs are located | `com.yourcompany.dto,com.yourcompany.model` |
-| **ENTITY_PACKAGES** | Where JPA entities are | `com.yourcompany.entity` |
-| **MAX_DTO_DEPTH** | Max nesting for DTOs | `10` |
+#### Core Configuration
+
+| Variable | Description | Example | Default |
+|----------|-------------|---------|---------|
+| **PACKAGE_INCLUDE** | Your base package pattern | `com.yourcompany.*` | None |
+| **PACKAGE_EXCLUDE** | Packages to exclude | `com.yourcompany.generated.*` | None |
+| **DTO_PACKAGES** | Where DTOs are located | `com.yourcompany.dto,com.yourcompany.model` | Auto-detect |
+| **ENTITY_PACKAGES** | Where JPA entities are | `com.yourcompany.entity` | Auto-detect |
+| **MAX_DTO_DEPTH** | Max nesting for DTOs | `10` | `10` |
+| **CALL_CHAIN_MAX_DEPTH** | Max depth for call chains | `15` | `10` |
+
+#### Logging Configuration
+
+| Variable | Description | Example | Default |
+|----------|-------------|---------|---------|
+| **MCP_LOGGING** | Enable/disable tool call logging | `true` or `false` | `true` |
+| **MCP_DEBUG** | Enable console debug output | `true` or `false` | `false` |
+
+**Logging Details:**
+- When enabled, logs are stored in `${workspaceFolder}/.mcp-logs/`
+- Two formats: JSON (machine-readable) and readable (human-friendly)
+- Logs include: tool name, arguments, response, execution time, success/failure
+- See [LOGGING_GUIDE.md](./docs/LOGGING_GUIDE.md) for complete documentation
 
 **How to find your packages:**
 1. Open any Java file in your Spring Boot project in IntelliJ
@@ -227,7 +278,7 @@ Update environment variables to match your Spring Boot project:
 3. Note the base package (e.g., `com.yourcompany.projectname`)
 4. Find DTO and entity packages by navigating the project structure in IntelliJ
 
-### 3. Restart Cody
+### 4. Restart Cody
 
 After configuration, restart the Cody plugin or restart IntelliJ IDEA.
 
@@ -247,6 +298,7 @@ You should see:
 🚀 Starting Spring Boot Micro Context MCP Server
 📁 Workspace: /path/to/your/spring/project
 📦 Package filter: com.yourcompany.*
+📝 Logging to: /path/to/your/spring/project/.mcp-logs/micro-context-2025-12-12.log
 [Java Parser Service] Java Parser Service started for workspace: /path/to/your/spring/project
 ✅ Spring Boot Micro Context MCP Server running
 📡 Listening for MCP requests...
@@ -496,7 +548,7 @@ Symbol successfully resolved to custom class.
 
 ## 📚 Documentation
 
-- **[requirement_doc.md](requirement_doc.md)** - Complete implementation specification (120 pages)
+- **[requirement_doc.md](docs/requirement_doc.md)** - Complete implementation specification (120 pages)
 - **[Architecture Details](#architecture)** - System design and communication
 - **[Configuration Guide](#configuration-for-intellij-cody)** - Setup instructions
 
@@ -545,10 +597,16 @@ MIT
 
 ## 📚 Additional Resources
 
-- **[SETUP_GUIDE.md](./SETUP_GUIDE.md)** - Complete Windows setup guide with troubleshooting
+- **[MCP_CONFIGURATION.md](./docs/MCP_CONFIGURATION.md)** - Complete MCP server configuration guide (all clients)
+- **[LOGGING_GUIDE.md](./docs/LOGGING_GUIDE.md)** - Comprehensive logging documentation
+- **[HOW_IT_WORKS.md](./docs/HOW_IT_WORKS.md)** - Architecture and workflow explanation
+- **[EXAMPLE_WORKFLOW.md](./docs/EXAMPLE_WORKFLOW.md)** - Step-by-step concrete example
+- **[SETUP_GUIDE.md](./docs/SETUP_GUIDE.md)** - Complete Windows setup guide with troubleshooting
+- **[QUICKSTART.md](./docs/QUICKSTART.md)** - Quick start guide
+- **[IMPROVEMENTS.md](./docs/IMPROVEMENTS.md)** - Potential improvements and enhancement ideas
 - **[cody_settings.example.json](./cody_settings.example.json)** - Ready-to-use configuration template
 - **[build.bat](./build.bat)** - Automated Windows build script
-- **[requirement_doc.md](./requirement_doc.md)** - Complete specification (120 pages)
+- **[requirement_doc.md](./docs/requirement_doc.md)** - Complete specification (120 pages)
 
 ---
 
