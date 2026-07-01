@@ -56,3 +56,6 @@ junit/
 tmp/
 temp/
 *.tmp
+
+# Claude Code local session data
+.claude/

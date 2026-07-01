@@ -71,7 +71,9 @@ echo   - Build complete
 echo.
 
 echo [Step 5/6] Running tests...
-if exist run-tests.sh (
+if exist run-tests.bat (
+    call run-tests.bat test-spring-project
+) else if exist run-tests.sh (
     bash run-tests.sh test-spring-project
 ) else (
     echo   - Test script not found, skipping
